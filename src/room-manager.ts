@@ -94,7 +94,7 @@ class RoomManager {
       chips: 0,
       seat,
       role: 'player',
-      status: 'no-chips',
+      status: 'spectator', // New players join as spectators — must click "Take a seat" to play
       connected: true,
       lastSeenAt: Date.now(),
       currentBet: 0,
@@ -246,37 +246,49 @@ class RoomManager {
   /**
    * Removes sensitive data (other players' cards) before sending to client.
    *
-   * Card-reveal rules:
-   * - The viewer always sees their own cards
+   * Card-reveal rules (strict, standard online-poker behavior):
+   * - The viewer always sees their own cards.
    * - Cards of other players are revealed when:
-   *   a) At least one player is all-in AND ≤2 players are still active
-   *      (in this case, cards of all-in players are revealed to everyone)
-   *   b) The hand has just been resolved (lastHandResult present)
-   *      — in this case, cards of all showdown participants are revealed
+   *   a) ALL-IN SHOWDOWN: at least one player is all-in AND there are zero
+   *      players still in 'playing' status (i.e. no one can act anymore, all
+   *      remaining live players are either all-in or folded). In this state
+   *      no future betting can occur, so we can safely reveal the cards of
+   *      every player who is still in the hand (all-in or playing-but-actually-
+   *      all-in-equivalent).
+   *   b) SHOWDOWN: the hand has just been resolved (lastHandResult present).
+   *      Cards of all showdown participants are revealed.
+   *
+   * If there is even ONE player still in 'playing' status (can act, raise,
+   * fold, etc.), NOBODY else's cards are revealed — because their decisions
+   * could be influenced by knowing opponents' cards.
    */
   sanitizeRoomForPlayer(room: Room, sessionToken: string): Room {
     // Build the set of sessionTokens whose cards should be revealed to everyone
     const revealedTokens = new Set<string>();
 
     if (room.gameState) {
-      // RULE A: All-in reveal — when ≤2 active players remain and at least one is all-in
-      const stillActive = room.players.filter(
+      // Players still in the hand (not folded, not sitting out, etc.)
+      const stillInHand = room.players.filter(
         (p) => p.status === 'playing' || p.status === 'all-in',
       );
-      const anyAllIn = stillActive.some((p) => p.status === 'all-in');
 
-      if (anyAllIn && stillActive.length <= 2) {
-        // Reveal cards of all-in players (the rest still playing — their cards stay hidden)
-        for (const p of stillActive) {
-          if (p.status === 'all-in') {
-            revealedTokens.add(p.sessionToken);
-          }
+      // Count players who can still ACT (i.e. not all-in)
+      const playersWhoCanStillAct = stillInHand.filter((p) => p.status === 'playing');
+      const anyAllIn = stillInHand.some((p) => p.status === 'all-in');
+
+      // RULE A: All-in reveal
+      // Only when no one can act anymore — meaning all remaining live players
+      // are all-in (or there's at most 1 'playing' player who is also already all-in
+      // in effect because everyone else is all-in/folded).
+      // Strict check: zero players in 'playing' status, at least one all-in.
+      if (anyAllIn && playersWhoCanStillAct.length === 0) {
+        // Reveal cards of every player still in the hand
+        for (const p of stillInHand) {
+          revealedTokens.add(p.sessionToken);
         }
       }
 
-      // RULE B: Showdown reveal — when hand just finished, show all showdown participants
-      // Note: by finishHand() time, player.holeCards is cleared. We need to grab
-      // them from lastHandResult.showdownCards and inject them back for display.
+      // RULE B: Showdown reveal — handled below via showdownCardsMap
     }
 
     // Build a map of showdown cards (for re-injection)

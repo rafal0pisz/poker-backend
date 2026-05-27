@@ -10,7 +10,8 @@ export type PlayerStatus =
   | 'sitting-out'
   | 'waiting'
   | 'no-chips'
-  | 'disconnected';
+  | 'disconnected'
+  | 'spectator';
 
 export type ActionType = 'check' | 'call' | 'bet' | 'raise' | 'fold' | 'all-in';
 
@@ -54,6 +55,9 @@ export interface SidePot {
 export interface HandResult {
   winnings: { sessionToken: string; amount: number; handDescription?: string }[];
   showdownCards: { sessionToken: string; cards: Card[]; handName: string }[];
+  // The cards that formed the winning hand (5 cards). Used to highlight on the UI.
+  // Identifies which of community + each player's hole cards won the hand.
+  winningCards: Card[];
 }
 
 export interface GameState {
@@ -116,6 +120,10 @@ export interface ClientToServerEvents {
   ) => void;
   'game:sit-out': () => void;
   'game:sit-back': () => void;
+  // Spectator → take a seat (join the game when next hand starts)
+  'game:take-seat': (
+    callback?: (response: { ok: boolean; error?: string }) => void,
+  ) => void;
 
   'admin:add-chips': (
     payload: { targetSessionToken: string; amount: number },

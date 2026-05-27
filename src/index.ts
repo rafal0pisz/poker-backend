@@ -373,6 +373,30 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Spectator → take a seat. Promotes them to 'no-chips' or 'waiting' depending on
+  // whether they have chips already (e.g. on reconnect they might).
+  socket.on('game:take-seat', (callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) {
+      return callback?.({ ok: false, error: 'No session' });
+    }
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback?.({ ok: false, error: 'Room not found' });
+    const player = room.players.find((p) => p.sessionToken === sessionToken);
+    if (!player) return callback?.({ ok: false, error: 'Player not found' });
+
+    if (player.status !== 'spectator') {
+      return callback?.({ ok: false, error: 'Already at the table' });
+    }
+
+    player.status = player.chips > 0 ? 'waiting' : 'no-chips';
+    console.log(`[game:take-seat] ${player.nick} took a seat in ${roomId}`);
+    broadcastRoomState(room);
+    callback?.({ ok: true });
+    emitSystemMessage(roomId, `${player.nick} took a seat at the table`);
+  });
+
   socket.on('admin:add-chips', (payload, callback) => {
     const sessionToken = socket.data.sessionToken;
     const roomId = socket.data.roomId;
@@ -395,7 +419,8 @@ io.on('connection', (socket) => {
     if (!target) return callback?.({ ok: false, error: 'Player not found' });
 
     target.chips += payload.amount;
-    if (target.status === 'no-chips') {
+    // Promote to 'waiting' if the player has no chips or is just a spectator
+    if (target.status === 'no-chips' || target.status === 'spectator') {
       target.status = 'waiting';
     }
 

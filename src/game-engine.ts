@@ -26,7 +26,11 @@ export function startNewHand(room: Room): { deck: Card[] } {
     player.hasActedThisRound = false;
     player.holeCards = undefined;
 
-    if (player.status === 'sitting-out' || player.status === 'disconnected') {
+    if (
+      player.status === 'sitting-out' ||
+      player.status === 'disconnected' ||
+      player.status === 'spectator'
+    ) {
       continue;
     }
     if (player.chips <= 0) {
@@ -301,6 +305,7 @@ export function finishHand(room: Room): HandResult {
   const result: HandResult = {
     winnings: [],
     showdownCards: [],
+    winningCards: [],
   };
 
   if (remaining.length === 1) {
@@ -308,6 +313,7 @@ export function finishHand(room: Room): HandResult {
     const totalPot = room.gameState.pot + room.gameState.sidePots.reduce((s, p) => s + p.amount, 0);
     winner.chips += totalPot;
     result.winnings.push({ sessionToken: winner.sessionToken, amount: totalPot });
+    // No showdown — no winning cards to highlight
   } else {
     const allPots: SidePot[] = [];
     if (room.gameState.pot > 0) {
@@ -328,7 +334,8 @@ export function finishHand(room: Room): HandResult {
       });
     }
 
-    for (const pot of allPots) {
+    for (let potIndex = 0; potIndex < allPots.length; potIndex++) {
+      const pot = allPots[potIndex];
       const eligible = remaining.filter((p) => pot.eligiblePlayers.includes(p.sessionToken));
       if (eligible.length === 0) continue;
 
@@ -341,6 +348,20 @@ export function finishHand(room: Room): HandResult {
       const winningSessionTokens = hands
         .filter((h) => winners.includes(h.hand))
         .map((h) => h.sessionToken);
+
+      // Capture winning 5-card combination from MAIN pot (potIndex === 0)
+      // for UI highlighting. We take the first winner's hand cards (in case of
+      // tie, all winners share the same 5-card combination).
+      if (potIndex === 0 && winners.length > 0 && result.winningCards.length === 0) {
+        const firstWinnerHand = winners[0] as { cards?: Array<{ value: string; suit: string } | string> };
+        if (firstWinnerHand?.cards) {
+          // Pokersolver returns cards either as strings ("As", "Kh") or objects.
+          // Normalize to our Card type (e.g. "As", "Kh").
+          result.winningCards = firstWinnerHand.cards
+            .map((c) => (typeof c === 'string' ? c : `${c.value}${c.suit}`))
+            .filter((c): c is import('./deck.js').Card => typeof c === 'string' && c.length === 2);
+        }
+      }
 
       const sharePerWinner = Math.floor(pot.amount / winningSessionTokens.length);
       const remainder = pot.amount - sharePerWinner * winningSessionTokens.length;
