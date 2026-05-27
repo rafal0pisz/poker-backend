@@ -17,6 +17,70 @@ import pokersolverImport from 'pokersolver';
 const { Hand } = pokersolverImport as any;
 
 /**
+ * Generates all C(n, k) combinations of `k` elements from `arr`.
+ * Used for Omaha hand evaluation.
+ */
+function combinations<T>(arr: T[], k: number): T[][] {
+  if (k === 0) return [[]];
+  if (k > arr.length) return [];
+  if (k === arr.length) return [arr];
+  const [first, ...rest] = arr;
+  const withFirst = combinations(rest, k - 1).map((c) => [first, ...c]);
+  const withoutFirst = combinations(rest, k);
+  return [...withFirst, ...withoutFirst];
+}
+
+/**
+ * Solves an Omaha hand: best 5-card hand using EXACTLY 2 hole cards + 3 board cards.
+ * This is the defining rule of Omaha — different from Texas Hold'em where you can use any 5.
+ *
+ * Tries all C(4,2) × C(5,3) = 6 × 10 = 60 combinations and picks the best.
+ *
+ * Returns the winning Hand object (from pokersolver) plus the specific 2 hole + 3 board
+ * cards that formed the winning combination — for UI highlighting.
+ */
+export function solveOmaha(
+  holeCards: Card[],
+  boardCards: Card[],
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+): { hand: any; holeUsed: Card[]; boardUsed: Card[] } {
+  if (holeCards.length !== 4) {
+    throw new Error(`Omaha requires exactly 4 hole cards, got ${holeCards.length}`);
+  }
+  if (boardCards.length < 3) {
+    throw new Error(`Need at least 3 board cards for Omaha, got ${boardCards.length}`);
+  }
+
+  const holeCombos = combinations(holeCards, 2);
+  const boardCombos = combinations(boardCards, 3);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let bestHand: any = null;
+  let bestHoleUsed: Card[] = [];
+  let bestBoardUsed: Card[] = [];
+
+  for (const hc of holeCombos) {
+    for (const bc of boardCombos) {
+      const hand = Hand.solve([...hc, ...bc]);
+      if (!bestHand) {
+        bestHand = hand;
+        bestHoleUsed = hc;
+        bestBoardUsed = bc;
+      } else {
+        const winners = Hand.winners([bestHand, hand]);
+        if (winners.includes(hand) && !winners.includes(bestHand)) {
+          bestHand = hand;
+          bestHoleUsed = hc;
+          bestBoardUsed = bc;
+        }
+      }
+    }
+  }
+
+  return { hand: bestHand, holeUsed: bestHoleUsed, boardUsed: bestBoardUsed };
+}
+
+/**
  * Starts a new hand.
  * Shuffles deck, deals cards, posts blinds, sets first to act.
  */
@@ -55,14 +119,13 @@ export function startNewHand(room: Room): { deck: Card[] } {
   const dealerPlayer = room.players.find((p) => p.seat === dealerSeat);
   let variant: GameVariant = dealerPlayer?.preferredVariant || 'texas';
 
-  // Safety guard: until Omaha and Drawmaha logic is fully implemented,
-  // fall back to Texas. This will be removed in M2 (Omaha) and M3 (Drawmaha).
-  if (variant === 'omaha' || variant === 'drawmaha') {
+  // Drawmaha is not yet implemented (Milestone 3). Fall back to Texas.
+  if (variant === 'drawmaha') {
     variant = 'texas';
   }
 
-  // Number of hole cards based on variant
-  const cardsPerPlayer = variant === 'omaha' ? 4 : variant === 'drawmaha' ? 5 : 2;
+  // Number of hole cards based on variant (drawmaha was already handled above)
+  const cardsPerPlayer = variant === 'omaha' ? 4 : 2;
 
   const deck = shuffledDeck();
   for (const player of activePlayers) {
@@ -333,6 +396,34 @@ export function finishHand(room: Room): HandResult {
     result.winnings.push({ sessionToken: winner.sessionToken, amount: totalPot });
     // No showdown — no winning cards to highlight
   } else {
+    const variant = room.gameState.variant;
+
+    // Helper: evaluate a player's hand based on the current variant
+    // Returns the pokersolver Hand object, plus (for Omaha) the specific
+    // 2 hole + 3 board cards that formed the winning combination.
+    const evaluateHand = (
+      player: Player,
+    ): {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      hand: any;
+      // For Omaha: the 5 cards (2 hole + 3 board) that won
+      // For Texas: undefined (any 5 of 7 cards may win)
+      winningHoleCards?: Card[];
+      winningBoardCards?: Card[];
+    } => {
+      const holeCards = player.holeCards || [];
+      const board = room.gameState!.communityCards;
+
+      if (variant === 'omaha') {
+        const { hand, holeUsed, boardUsed } = solveOmaha(holeCards, board);
+        return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };
+      }
+
+      // Texas Hold'em: use all 7 cards, pokersolver picks the best 5
+      const hand = Hand.solve([...holeCards, ...board]);
+      return { hand };
+    };
+
     const allPots: SidePot[] = [];
     if (room.gameState.pot > 0) {
       allPots.push({
@@ -342,13 +433,15 @@ export function finishHand(room: Room): HandResult {
     }
     allPots.push(...room.gameState.sidePots);
 
+    // Pre-evaluate everyone (once) for showdownCards list
+    const evaluations = new Map<string, ReturnType<typeof evaluateHand>>();
     for (const p of remaining) {
-      const handCards = [...(p.holeCards || []), ...room.gameState.communityCards];
-      const evaluated = Hand.solve(handCards);
+      const ev = evaluateHand(p);
+      evaluations.set(p.sessionToken, ev);
       result.showdownCards.push({
         sessionToken: p.sessionToken,
         cards: p.holeCards || [],
-        handName: evaluated.name,
+        handName: ev.hand.name,
       });
     }
 
@@ -359,7 +452,7 @@ export function finishHand(room: Room): HandResult {
 
       const hands = eligible.map((p) => ({
         sessionToken: p.sessionToken,
-        hand: Hand.solve([...(p.holeCards || []), ...room.gameState!.communityCards]),
+        hand: evaluations.get(p.sessionToken)!.hand,
       }));
 
       const winners = Hand.winners(hands.map((h) => h.hand));
@@ -368,16 +461,27 @@ export function finishHand(room: Room): HandResult {
         .map((h) => h.sessionToken);
 
       // Capture winning 5-card combination from MAIN pot (potIndex === 0)
-      // for UI highlighting. We take the first winner's hand cards (in case of
-      // tie, all winners share the same 5-card combination).
+      // for UI highlighting.
       if (potIndex === 0 && winners.length > 0 && result.winningCards.length === 0) {
-        const firstWinnerHand = winners[0] as { cards?: Array<{ value: string; suit: string } | string> };
-        if (firstWinnerHand?.cards) {
-          // Pokersolver returns cards either as strings ("As", "Kh") or objects.
-          // Normalize to our Card type (e.g. "As", "Kh").
-          result.winningCards = firstWinnerHand.cards
-            .map((c) => (typeof c === 'string' ? c : `${c.value}${c.suit}`))
-            .filter((c): c is import('./deck.js').Card => typeof c === 'string' && c.length === 2);
+        const firstWinnerToken = winningSessionTokens[0];
+        const winnerEval = evaluations.get(firstWinnerToken);
+
+        if (winnerEval?.winningHoleCards && winnerEval?.winningBoardCards) {
+          // Omaha: we know exactly which 2 hole + 3 board cards won
+          result.winningCards = [
+            ...winnerEval.winningHoleCards,
+            ...winnerEval.winningBoardCards,
+          ];
+        } else {
+          // Texas: pokersolver tells us the 5 winning cards
+          const firstWinnerHand = winners[0] as {
+            cards?: Array<{ value: string; suit: string } | string>;
+          };
+          if (firstWinnerHand?.cards) {
+            result.winningCards = firstWinnerHand.cards
+              .map((c) => (typeof c === 'string' ? c : `${c.value}${c.suit}`))
+              .filter((c): c is Card => typeof c === 'string' && c.length === 2);
+          }
         }
       }
 
@@ -394,7 +498,7 @@ export function finishHand(room: Room): HandResult {
         if (existing) {
           existing.amount += share;
         } else {
-          const evaluated = hands.find((h) => h.sessionToken === winnerToken)!.hand;
+          const evaluated = evaluations.get(winnerToken)!.hand;
           result.winnings.push({
             sessionToken: winnerToken,
             amount: share,
