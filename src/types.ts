@@ -3,6 +3,12 @@ import type { Card } from './deck.js';
 
 export type PlayerRole = 'player' | 'vice-admin' | 'admin';
 
+// Game variants for Dealer's Choice (Mix Poker)
+// Texas: 2 hole cards + 5 community
+// Omaha: 4 hole cards + 5 community, must use 2 hole + 3 community
+// Drawmaha: 5 hole cards + 5 community + draw phase + split pot
+export type GameVariant = 'texas' | 'omaha' | 'drawmaha';
+
 export type PlayerStatus =
   | 'playing'
   | 'folded'
@@ -35,6 +41,9 @@ export interface Player {
   currentBet: number;
   totalBetInHand: number;
   hasActedThisRound: boolean;
+  // Dealer's Choice — preferred game variant when this player is the dealer
+  // Default: 'texas'. Changed via 'game:set-variant' event.
+  preferredVariant: GameVariant;
 }
 
 export interface RoomSettings {
@@ -62,6 +71,8 @@ export interface HandResult {
 
 export interface GameState {
   phase: HandPhase;
+  // Game variant for this specific hand (determined when hand starts, based on dealer's preference)
+  variant: GameVariant;
   communityCards: Card[];
   pot: number;
   sidePots: SidePot[];
@@ -122,6 +133,12 @@ export interface ClientToServerEvents {
   'game:sit-back': () => void;
   // Spectator → take a seat (join the game when next hand starts)
   'game:take-seat': (
+    callback?: (response: { ok: boolean; error?: string }) => void,
+  ) => void;
+
+  // Dealer's Choice — set preferred variant for when I'm dealer
+  'game:set-variant': (
+    payload: { variant: GameVariant },
     callback?: (response: { ok: boolean; error?: string }) => void,
   ) => void;
 

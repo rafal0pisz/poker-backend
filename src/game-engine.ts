@@ -4,6 +4,7 @@
 import { shuffledDeck, type Card } from './deck.js';
 import type {
   ActionType,
+  GameVariant,
   HandPhase,
   HandResult,
   Player,
@@ -50,9 +51,25 @@ export function startNewHand(room: Room): { deck: Card[] } {
   const prevDealer = room.gameState?.dealerSeat ?? -1;
   const dealerSeat = getNextActiveSeat(room, prevDealer, true);
 
+  // ===== DEALER'S CHOICE: variant comes from dealer's preference =====
+  const dealerPlayer = room.players.find((p) => p.seat === dealerSeat);
+  let variant: GameVariant = dealerPlayer?.preferredVariant || 'texas';
+
+  // Safety guard: until Omaha and Drawmaha logic is fully implemented,
+  // fall back to Texas. This will be removed in M2 (Omaha) and M3 (Drawmaha).
+  if (variant === 'omaha' || variant === 'drawmaha') {
+    variant = 'texas';
+  }
+
+  // Number of hole cards based on variant
+  const cardsPerPlayer = variant === 'omaha' ? 4 : variant === 'drawmaha' ? 5 : 2;
+
   const deck = shuffledDeck();
   for (const player of activePlayers) {
-    player.holeCards = [deck.pop()!, deck.pop()!];
+    player.holeCards = [];
+    for (let i = 0; i < cardsPerPlayer; i++) {
+      player.holeCards.push(deck.pop()!);
+    }
   }
 
   const sbSeat = getNextActiveSeat(room, dealerSeat, false);
@@ -85,6 +102,7 @@ export function startNewHand(room: Room): { deck: Card[] } {
 
   room.gameState = {
     phase: 'preflop',
+    variant,
     communityCards: [],
     pot: 0,
     sidePots: [],

@@ -35,6 +35,7 @@ class RoomManager {
       currentBet: 0,
       totalBetInHand: 0,
       hasActedThisRound: false,
+      preferredVariant: 'texas',
     };
 
     const room: Room = {
@@ -94,12 +95,13 @@ class RoomManager {
       chips: 0,
       seat,
       role: 'player',
-      status: 'spectator', // New players join as spectators — must click "Take a seat" to play
+      status: 'spectator',
       connected: true,
       lastSeenAt: Date.now(),
       currentBet: 0,
       totalBetInHand: 0,
       hasActedThisRound: false,
+      preferredVariant: 'texas',
     };
 
     room.players.push(newPlayer);
@@ -306,15 +308,20 @@ class RoomManager {
         if (p.sessionToken === sessionToken) {
           return { ...p };
         }
-        // Reveal others' cards only if their token is in the revealed set (all-in scenario)
-        if (revealedTokens.has(p.sessionToken)) {
-          return { ...p };
-        }
-        // Showdown: re-inject cards from showdownCards for display
+
+        // Check if we should show this player's cards (via all-in reveal OR showdown)
+        const isAllInRevealed = revealedTokens.has(p.sessionToken);
         const showdownCards = showdownCardsMap.get(p.sessionToken);
-        if (showdownCards) {
-          return { ...p, holeCards: showdownCards };
+        const shouldReveal = isAllInRevealed || !!showdownCards;
+
+        if (shouldReveal) {
+          // If holeCards are still in memory (before finishHand) use them.
+          // After finishHand they are cleared to undefined — fall back to showdownCards.
+          // This is critical so that cards remain visible during the post-showdown delay.
+          const cardsToShow = p.holeCards || showdownCards;
+          return { ...p, holeCards: cardsToShow };
         }
+
         // Otherwise hide their cards
         return { ...p, holeCards: undefined };
       }),

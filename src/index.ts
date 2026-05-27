@@ -15,6 +15,7 @@ import {
 } from './game-engine.js';
 import type {
   ClientToServerEvents,
+  GameVariant,
   ServerToClientEvents,
   SocketData,
   Room,
@@ -134,7 +135,7 @@ function progressGame(roomId: string) {
     const desc = describeHandResult(room);
     if (desc) emitSystemMessage(roomId, desc);
 
-    setTimeout(() => tryStartNextHand(roomId), 5000);
+    setTimeout(() => tryStartNextHand(roomId), 6000);
     return;
   }
 
@@ -149,7 +150,7 @@ function progressGame(roomId: string) {
       const desc = describeHandResult(room);
       if (desc) emitSystemMessage(roomId, desc);
 
-      setTimeout(() => tryStartNextHand(roomId), 8000);
+      setTimeout(() => tryStartNextHand(roomId), 6000);
       return;
     }
     const deck = roomManager.getDeck(roomId);
@@ -395,6 +396,29 @@ io.on('connection', (socket) => {
     broadcastRoomState(room);
     callback?.({ ok: true });
     emitSystemMessage(roomId, `${player.nick} took a seat at the table`);
+  });
+
+  // Dealer's Choice — set preferred variant for when this player is dealer
+  socket.on('game:set-variant', (payload, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) {
+      return callback?.({ ok: false, error: 'No session' });
+    }
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback?.({ ok: false, error: 'Room not found' });
+    const player = room.players.find((p) => p.sessionToken === sessionToken);
+    if (!player) return callback?.({ ok: false, error: 'Player not found' });
+
+    const allowed: GameVariant[] = ['texas', 'omaha', 'drawmaha'];
+    if (!allowed.includes(payload.variant)) {
+      return callback?.({ ok: false, error: 'Unknown variant' });
+    }
+
+    player.preferredVariant = payload.variant;
+    console.log(`[game:set-variant] ${player.nick} set variant to ${payload.variant}`);
+    broadcastRoomState(room);
+    callback?.({ ok: true });
   });
 
   socket.on('admin:add-chips', (payload, callback) => {
