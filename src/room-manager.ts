@@ -1,0 +1,337 @@
+// Room manager — in-memory state of rooms
+
+import { customAlphabet } from 'nanoid';
+import type { Card } from './deck.js';
+import type { Player, Room, RoomSettings, ChatMessage } from './types.js';
+
+const generateRoomId = customAlphabet('23456789ABCDEFGHJKMNPQRSTUVWXYZ', 6);
+const generateSessionToken = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 32);
+const generateMessageId = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 12);
+
+const MAX_MESSAGES_PER_ROOM = 500;
+
+class RoomManager {
+  private rooms: Map<string, Room> = new Map();
+  private sessionToRoom: Map<string, string> = new Map();
+  private decks: Map<string, Card[]> = new Map();
+  private rateLimits: Map<string, number[]> = new Map();
+
+  createRoom(nick: string, settings: RoomSettings): { room: Room; sessionToken: string } {
+    let roomId = generateRoomId();
+    while (this.rooms.has(roomId)) {
+      roomId = generateRoomId();
+    }
+    const sessionToken = generateSessionToken();
+
+    const admin: Player = {
+      sessionToken,
+      nick: this.sanitizeNick(nick),
+      chips: settings.startingBuyIn,
+      seat: 0,
+      role: 'admin',
+      status: 'waiting',
+      connected: true,
+      lastSeenAt: Date.now(),
+      currentBet: 0,
+      totalBetInHand: 0,
+      hasActedThisRound: false,
+    };
+
+    const room: Room = {
+      id: roomId,
+      createdAt: Date.now(),
+      players: [admin],
+      settings,
+      gameState: null,
+      messages: [],
+    };
+
+    this.rooms.set(roomId, room);
+    this.sessionToRoom.set(sessionToken, roomId);
+    return { room, sessionToken };
+  }
+
+  joinRoom(
+    roomId: string,
+    nick: string,
+    sessionToken?: string,
+  ): { ok: true; room: Room; sessionToken: string } | { ok: false; error: string } {
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      return { ok: false, error: 'Room not found' };
+    }
+
+    if (sessionToken) {
+      const existing = room.players.find((p) => p.sessionToken === sessionToken);
+      if (existing) {
+        existing.connected = true;
+        existing.lastSeenAt = Date.now();
+        if (existing.status === 'disconnected') {
+          existing.status = 'waiting';
+        }
+        return { ok: true, room, sessionToken };
+      }
+    }
+
+    if (room.players.length >= room.settings.maxSeats) {
+      return { ok: false, error: 'All seats are taken' };
+    }
+
+    const cleanNick = this.sanitizeNick(nick);
+    if (room.players.some((p) => p.nick.toLowerCase() === cleanNick.toLowerCase())) {
+      return { ok: false, error: 'This nickname is already taken in this room' };
+    }
+
+    const occupiedSeats = new Set(room.players.map((p) => p.seat));
+    let seat = 0;
+    while (occupiedSeats.has(seat)) seat++;
+
+    const newSessionToken = generateSessionToken();
+
+    const newPlayer: Player = {
+      sessionToken: newSessionToken,
+      nick: cleanNick,
+      chips: 0,
+      seat,
+      role: 'player',
+      status: 'no-chips',
+      connected: true,
+      lastSeenAt: Date.now(),
+      currentBet: 0,
+      totalBetInHand: 0,
+      hasActedThisRound: false,
+    };
+
+    room.players.push(newPlayer);
+    this.sessionToRoom.set(newSessionToken, roomId);
+
+    return { ok: true, room, sessionToken: newSessionToken };
+  }
+
+  disconnectPlayer(sessionToken: string): { roomId: string; room: Room } | null {
+    const roomId = this.sessionToRoom.get(sessionToken);
+    if (!roomId) return null;
+
+    const room = this.rooms.get(roomId);
+    if (!room) return null;
+
+    const player = room.players.find((p) => p.sessionToken === sessionToken);
+    if (player) {
+      player.connected = false;
+      player.lastSeenAt = Date.now();
+      if (room.gameState && (player.status === 'playing' || player.status === 'all-in')) {
+        if (player.status === 'playing') {
+          player.status = 'folded';
+        }
+      }
+    }
+
+    const anyConnected = room.players.some((p) => p.connected);
+    if (!anyConnected) {
+      this.schedulePotentialRemoval(roomId);
+    }
+
+    return { roomId, room };
+  }
+
+  removePlayer(sessionToken: string): { roomId: string; room: Room | null } | null {
+    const roomId = this.sessionToRoom.get(sessionToken);
+    if (!roomId) return null;
+
+    this.sessionToRoom.delete(sessionToken);
+    this.rateLimits.delete(sessionToken);
+    const room = this.rooms.get(roomId);
+    if (!room) return null;
+
+    room.players = room.players.filter((p) => p.sessionToken !== sessionToken);
+
+    if (room.players.length === 0) {
+      this.rooms.delete(roomId);
+      this.decks.delete(roomId);
+      return { roomId, room: null };
+    }
+
+    if (!room.players.some((p) => p.role === 'admin')) {
+      const viceAdmin = room.players.find((p) => p.role === 'vice-admin');
+      if (viceAdmin) {
+        viceAdmin.role = 'admin';
+      } else if (room.players.length > 0) {
+        room.players[0].role = 'admin';
+      }
+    }
+
+    return { roomId, room };
+  }
+
+  getRoom(roomId: string): Room | null {
+    return this.rooms.get(roomId) || null;
+  }
+
+  getRoomBySessionToken(sessionToken: string): Room | null {
+    const roomId = this.sessionToRoom.get(sessionToken);
+    if (!roomId) return null;
+    return this.rooms.get(roomId) || null;
+  }
+
+  setDeck(roomId: string, deck: Card[]): void {
+    this.decks.set(roomId, deck);
+  }
+
+  getDeck(roomId: string): Card[] | null {
+    return this.decks.get(roomId) || null;
+  }
+
+  addChatMessage(
+    sessionToken: string,
+    type: 'text' | 'reaction',
+    content: string,
+  ): { ok: true; message: ChatMessage } | { ok: false; error: string } {
+    const room = this.getRoomBySessionToken(sessionToken);
+    if (!room) return { ok: false, error: 'Not in a room' };
+
+    const player = room.players.find((p) => p.sessionToken === sessionToken);
+    if (!player) return { ok: false, error: 'Player not found' };
+
+    const trimmed = content.trim();
+    if (trimmed.length === 0) return { ok: false, error: 'Empty message' };
+    if (trimmed.length > 200) return { ok: false, error: 'Message too long (max 200)' };
+
+    const now = Date.now();
+    const recent = (this.rateLimits.get(sessionToken) || []).filter((t) => now - t < 1000);
+    if (recent.length >= 5) {
+      return { ok: false, error: 'Slow down — too many messages' };
+    }
+    recent.push(now);
+    this.rateLimits.set(sessionToken, recent);
+
+    const message: ChatMessage = {
+      id: generateMessageId(),
+      type,
+      senderSessionToken: sessionToken,
+      senderNick: player.nick,
+      content: trimmed,
+      timestamp: now,
+    };
+
+    room.messages.push(message);
+
+    if (room.messages.length > MAX_MESSAGES_PER_ROOM) {
+      room.messages = room.messages.slice(-MAX_MESSAGES_PER_ROOM);
+    }
+
+    return { ok: true, message };
+  }
+
+  addSystemMessage(roomId: string, content: string): ChatMessage | null {
+    const room = this.rooms.get(roomId);
+    if (!room) return null;
+
+    const message: ChatMessage = {
+      id: generateMessageId(),
+      type: 'system',
+      senderSessionToken: null,
+      senderNick: 'System',
+      content,
+      timestamp: Date.now(),
+    };
+
+    room.messages.push(message);
+    if (room.messages.length > MAX_MESSAGES_PER_ROOM) {
+      room.messages = room.messages.slice(-MAX_MESSAGES_PER_ROOM);
+    }
+
+    return message;
+  }
+
+  /**
+   * Removes sensitive data (other players' cards) before sending to client.
+   *
+   * Card-reveal rules:
+   * - The viewer always sees their own cards
+   * - Cards of other players are revealed when:
+   *   a) At least one player is all-in AND ≤2 players are still active
+   *      (in this case, cards of all-in players are revealed to everyone)
+   *   b) The hand has just been resolved (lastHandResult present)
+   *      — in this case, cards of all showdown participants are revealed
+   */
+  sanitizeRoomForPlayer(room: Room, sessionToken: string): Room {
+    // Build the set of sessionTokens whose cards should be revealed to everyone
+    const revealedTokens = new Set<string>();
+
+    if (room.gameState) {
+      // RULE A: All-in reveal — when ≤2 active players remain and at least one is all-in
+      const stillActive = room.players.filter(
+        (p) => p.status === 'playing' || p.status === 'all-in',
+      );
+      const anyAllIn = stillActive.some((p) => p.status === 'all-in');
+
+      if (anyAllIn && stillActive.length <= 2) {
+        // Reveal cards of all-in players (the rest still playing — their cards stay hidden)
+        for (const p of stillActive) {
+          if (p.status === 'all-in') {
+            revealedTokens.add(p.sessionToken);
+          }
+        }
+      }
+
+      // RULE B: Showdown reveal — when hand just finished, show all showdown participants
+      // Note: by finishHand() time, player.holeCards is cleared. We need to grab
+      // them from lastHandResult.showdownCards and inject them back for display.
+    }
+
+    // Build a map of showdown cards (for re-injection)
+    const showdownCardsMap = new Map<string, typeof room.players[number]['holeCards']>();
+    if (room.gameState?.lastHandResult) {
+      for (const sc of room.gameState.lastHandResult.showdownCards) {
+        showdownCardsMap.set(sc.sessionToken, sc.cards);
+      }
+    }
+
+    return {
+      ...room,
+      players: room.players.map((p) => {
+        // The player always sees their own cards
+        if (p.sessionToken === sessionToken) {
+          return { ...p };
+        }
+        // Reveal others' cards only if their token is in the revealed set (all-in scenario)
+        if (revealedTokens.has(p.sessionToken)) {
+          return { ...p };
+        }
+        // Showdown: re-inject cards from showdownCards for display
+        const showdownCards = showdownCardsMap.get(p.sessionToken);
+        if (showdownCards) {
+          return { ...p, holeCards: showdownCards };
+        }
+        // Otherwise hide their cards
+        return { ...p, holeCards: undefined };
+      }),
+    };
+  }
+
+  private sanitizeNick(nick: string): string {
+    return nick.trim().slice(0, 16);
+  }
+
+  private schedulePotentialRemoval(roomId: string) {
+    setTimeout(
+      () => {
+        const room = this.rooms.get(roomId);
+        if (!room) return;
+        const anyConnected = room.players.some((p) => p.connected);
+        if (!anyConnected) {
+          console.log(`[RoomManager] Removing inactive room ${roomId}`);
+          for (const player of room.players) {
+            this.sessionToRoom.delete(player.sessionToken);
+            this.rateLimits.delete(player.sessionToken);
+          }
+          this.rooms.delete(roomId);
+          this.decks.delete(roomId);
+        }
+      },
+      60 * 60 * 1000,
+    );
+  }
+}
+
+export const roomManager = new RoomManager();
