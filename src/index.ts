@@ -265,8 +265,10 @@ function progressGame(roomId: string) {
     advancePhase(room, deck);
     broadcastRoomState(room);
 
-    // If we just entered the draw phase, no need to check stillCanAct
-    if (room.gameState.phase === 'draw') return;
+    // Re-read phase after advancePhase — TypeScript narrows the type incorrectly
+    // based on earlier checks, so cast to string to get the actual runtime value.
+    const phaseAfterAdvance: string = room.gameState.phase;
+    if (phaseAfterAdvance === 'draw') return;
 
     const stillCanAct = room.players.filter(
       (p) => p.status === 'playing' && !p.hasActedThisRound,
