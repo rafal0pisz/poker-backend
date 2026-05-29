@@ -98,6 +98,8 @@ export interface DrawState {
   decideDeadline: number | null;
   // Current player deciding on their open card
   currentDecidingSeat: number | null;
+  // Timer deadline for the draw submission phase (all players discard simultaneously)
+  drawSubmitDeadline: number | null;
 }
 
 export interface GameState {

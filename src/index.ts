@@ -49,6 +49,104 @@ const sessionToSocket = new Map<string, string>();
 // Drawmaha decide timers — keyed by roomId
 const drawDecideTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+// Action timers — auto check/fold when player times out
+const actionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function clearActionTimer(roomId: string) {
+  const t = actionTimers.get(roomId);
+  if (t) { clearTimeout(t); actionTimers.delete(roomId); }
+}
+
+function scheduleActionTimer(roomId: string) {
+  clearActionTimer(roomId);
+  const room = roomManager.getRoom(roomId);
+  if (!room || !room.gameState) return;
+
+  const { currentPlayerSeat, actionDeadline, currentBet, phase } = room.gameState;
+  if (!currentPlayerSeat || !actionDeadline || phase === 'showdown') return;
+
+  const delay = Math.max(0, actionDeadline - Date.now());
+
+  const timer = setTimeout(() => {
+    actionTimers.delete(roomId);
+    const r = roomManager.getRoom(roomId);
+    if (!r || !r.gameState) return;
+    // Guard: player may have already acted
+    if (r.gameState.currentPlayerSeat !== currentPlayerSeat) return;
+
+    const player = r.players.find((p) => p.seat === currentPlayerSeat);
+    if (!player || player.status !== 'playing') return;
+
+    const toCall = r.gameState.currentBet - player.currentBet;
+
+    if (toCall === 0) {
+      // No bet to face — auto-check
+      performAction(r, player.sessionToken, 'check');
+      console.log(`[timeout] ${player.nick} auto-check in ${roomId}`);
+      emitSystemMessage(roomId, `${player.nick} timed out — auto-check`);
+    } else {
+      // Bet/raise to face — auto-fold and sit them out
+      performAction(r, player.sessionToken, 'fold');
+      // Fix 3: auto sit-out so they don't block future hands
+      player.status = 'sitting-out';
+      console.log(`[timeout] ${player.nick} auto-fold + sit-out in ${roomId}`);
+      emitSystemMessage(roomId, `${player.nick} timed out — folded and sitting out`);
+    }
+
+    broadcastRoomState(r);
+    progressGame(roomId);
+  }, delay + 500); // +500ms grace period
+
+  actionTimers.set(roomId, timer);
+}
+
+// Draw submit timers — auto stand-pat when draw phase times out
+const drawSubmitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function clearDrawSubmitTimer(roomId: string) {
+  const t = drawSubmitTimers.get(roomId);
+  if (t) { clearTimeout(t); drawSubmitTimers.delete(roomId); }
+}
+
+function scheduleDrawSubmitTimer(roomId: string) {
+  clearDrawSubmitTimer(roomId);
+  const room = roomManager.getRoom(roomId);
+  if (!room || !room.gameState?.drawState) return;
+
+  const deadline = room.gameState.drawState.drawSubmitDeadline;
+  if (!deadline) return;
+
+  const delay = Math.max(0, deadline - Date.now());
+
+  const timer = setTimeout(() => {
+    drawSubmitTimers.delete(roomId);
+    const r = roomManager.getRoom(roomId);
+    if (!r || !r.gameState?.drawState) return;
+
+    const deck = roomManager.getDeck(roomId);
+    if (!deck) return;
+
+    // Auto stand-pat for any player who hasn't submitted their draw
+    const ds = r.gameState.drawState;
+    const pending = r.players.filter(
+      (p) => ds.playerStates[p.sessionToken] && !ds.playerStates[p.sessionToken].hasDrawn
+    );
+
+    for (const player of pending) {
+      console.log(`[draw-timeout] ${player.nick} auto stand-pat in ${roomId}`);
+      performDrawDiscard(r, player.sessionToken, [], deck);
+      emitSystemMessage(roomId, `${player.nick} timed out — stand pat`);
+    }
+
+    if (pending.length > 0) {
+      broadcastRoomState(r);
+      progressGame(roomId);
+    }
+  }, delay + 500);
+
+  drawSubmitTimers.set(roomId, timer);
+}
+
 function broadcastRoomState(room: Room) {
   for (const player of room.players) {
     const socketId = sessionToSocket.get(player.sessionToken);
@@ -95,6 +193,7 @@ function tryStartNextHand(roomId: string): boolean {
     roomManager.setDeck(roomId, deck);
     broadcastRoomState(room);
     sendHoleCards(room);
+    scheduleActionTimer(roomId); // preflop — first to act
     console.log(`[tryStartNextHand] Started hand #${room.gameState?.handNumber} in ${roomId}`);
     return true;
   } catch (err) {
@@ -242,6 +341,7 @@ function progressGame(roomId: string) {
     const desc = describeHandResult(room);
     if (desc) emitSystemMessage(roomId, desc);
 
+    clearActionTimer(roomId); // hand over
     setTimeout(() => tryStartNextHand(roomId), 6000);
     return;
   }
@@ -257,6 +357,7 @@ function progressGame(roomId: string) {
       const desc = describeHandResult(room);
       if (desc) emitSystemMessage(roomId, desc);
 
+      clearActionTimer(roomId); // hand over
       setTimeout(() => tryStartNextHand(roomId), 6000);
       return;
     }
@@ -264,11 +365,15 @@ function progressGame(roomId: string) {
     if (!deck) return;
     advancePhase(room, deck);
     broadcastRoomState(room);
+    scheduleActionTimer(roomId); // first player of new round
 
     // Re-read phase after advancePhase — TypeScript narrows the type incorrectly
     // based on earlier checks, so cast to string to get the actual runtime value.
     const phaseAfterAdvance: string = room.gameState.phase;
-    if (phaseAfterAdvance === 'draw') return;
+    if (phaseAfterAdvance === 'draw') {
+      scheduleDrawSubmitTimer(roomId); // auto stand-pat timer for draw phase
+      return;
+    }
 
     const stillCanAct = room.players.filter(
       (p) => p.status === 'playing' && !p.hasActedThisRound,
@@ -281,6 +386,7 @@ function progressGame(roomId: string) {
 
   nextPlayer(room);
   broadcastRoomState(room);
+  scheduleActionTimer(roomId);
 }
 
 io.on('connection', (socket) => {
@@ -437,6 +543,7 @@ io.on('connection', (socket) => {
     const room = roomManager.getRoom(roomId);
     if (!room) return callback?.({ ok: false, error: 'Room not found' });
 
+    clearActionTimer(roomId); // player acted — cancel auto-action timer
     const result = performAction(room, sessionToken, payload.action, payload.amount);
     if (!result.ok) {
       return callback?.({ ok: false, error: result.error });

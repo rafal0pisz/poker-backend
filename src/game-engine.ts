@@ -326,6 +326,8 @@ export function initDrawState(room: Room): DrawState {
     openCards: {},
     decideDeadline: null,
     currentDecidingSeat: null,
+    // Players have actionTimeoutSec seconds to submit their draw choices
+    drawSubmitDeadline: Date.now() + room.settings.actionTimeoutSec * 1000,
   };
 }
 
