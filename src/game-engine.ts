@@ -527,45 +527,56 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
     (p) => p.status === 'playing' || p.status === 'all-in',
   );
 
-  const totalPot =
-    room.gameState.pot +
-    room.gameState.sidePots.reduce((s, p) => s + p.amount, 0);
-
   const result: HandResult = {
     winnings: [],
     showdownCards: [],
     winningCards: [],
   };
 
-  if (remaining.length === 1) {
-    // Everyone else folded — scoop
-    const winner = remaining[0];
-    winner.chips += totalPot;
-    result.winnings.push({ sessionToken: winner.sessionToken, amount: totalPot });
-    room.gameState.phase = 'showdown';
-    room.gameState.currentPlayerSeat = null;
-    room.gameState.actionDeadline = null;
-    room.gameState.lastHandResult = result;
-    room.gameState.pot = 0;
-    room.gameState.sidePots = [];
-    for (const p of room.players) p.holeCards = undefined;
-    return result;
+  // Helper: add chips to a player and record in winnings
+  const addWinnings = (
+    player: Player,
+    amount: number,
+    desc?: string,
+  ) => {
+    if (amount <= 0) return;
+    player.chips += amount;
+    const existing = result.winnings.find((w) => w.sessionToken === player.sessionToken);
+    if (existing) {
+      existing.amount += amount;
+    } else {
+      result.winnings.push({ sessionToken: player.sessionToken, amount, handDescription: desc });
+    }
+  };
+
+  // Build ordered list of all pots (main pot first, then side pots in creation order)
+  // Each pot has an amount and a set of eligible session tokens.
+  const allPots: SidePot[] = [];
+  if (room.gameState.pot > 0) {
+    allPots.push({
+      amount: room.gameState.pot,
+      eligiblePlayers: remaining.map((p) => p.sessionToken),
+    });
   }
+  allPots.push(...room.gameState.sidePots);
+
+  const totalPot = allPots.reduce((s, p) => s + p.amount, 0);
 
   const board = room.gameState.communityCards;
 
-  console.log(`[Drawmaha showdown] board=${board.length} cards, players=${remaining.length}`);
+  console.log(
+    `[Drawmaha showdown] board=${board.length} cards, players=${remaining.length}, ` +
+    `pots=${allPots.map((p) => `${p.amount}(${p.eligiblePlayers.length} elig.)`).join(' + ')}`,
+  );
   for (const p of remaining) {
-    console.log(`  ${p.nick}: ${p.holeCards?.length ?? 0} hole cards: ${p.holeCards?.join(',')}`);
+    console.log(`  ${p.nick}: ${p.holeCards?.length ?? 0} cards: ${p.holeCards?.join(',')}`);
   }
 
-  // Safety: if board < 5 (shouldn't happen but guard anyway)
-  if (board.length < 3) {
-    // Fallback: give pot to first player (degenerate case)
-    console.error('[Drawmaha] Board too short for evaluation:', board.length);
+  // Edge case: everyone folded except one
+  if (remaining.length === 1) {
     const winner = remaining[0];
-    winner.chips += totalPot;
-    result.winnings.push({ sessionToken: winner.sessionToken, amount: totalPot });
+    addWinnings(winner, totalPot);
+    console.log(`[Drawmaha] Last player standing: ${winner.nick} wins ${totalPot}`);
     room.gameState.phase = 'showdown';
     room.gameState.currentPlayerSeat = null;
     room.gameState.actionDeadline = null;
@@ -576,111 +587,160 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
     return result;
   }
 
-  // Evaluate Omaha half (EXACTLY 2 hole + 3 board)
-  // Works with 5 or 6 hole cards — combinations(n, 2) handles any n >= 2
-  const omahaEvals = remaining.map((p) => {
+  // Guard: board must have at least 3 cards for Omaha eval
+  if (board.length < 3) {
+    console.error('[Drawmaha] Board too short for evaluation:', board.length);
+    addWinnings(remaining[0], totalPot);
+    room.gameState.phase = 'showdown';
+    room.gameState.currentPlayerSeat = null;
+    room.gameState.actionDeadline = null;
+    room.gameState.lastHandResult = result;
+    room.gameState.pot = 0;
+    room.gameState.sidePots = [];
+    for (const p of room.players) p.holeCards = undefined;
+    return result;
+  }
+
+  // Pre-evaluate hands for all remaining players (once, reused across pots)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const omahaEvalMap = new Map<string, { hand: any; holeUsed: Card[]; boardUsed: Card[] }>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const texasEvalMap = new Map<string, { hand: any }>();
+
+  for (const p of remaining) {
     try {
       const { hand, holeUsed, boardUsed } = solveOmaha(p.holeCards ?? [], board);
-      return { player: p, hand, holeUsed, boardUsed };
+      omahaEvalMap.set(p.sessionToken, { hand, holeUsed, boardUsed });
     } catch (err) {
       console.error(`[Drawmaha] Omaha eval failed for ${p.nick}:`, err);
       throw err;
     }
-  });
-
-  // Evaluate Texas half: best 5-card hand from HOLE CARDS ONLY (no board).
-  // This is the "draw" component of Drawmaha — you draw to improve your own hand,
-  // independent of the community cards.
-  // With 5 hole cards: pokersolver picks the best 5-card hand.
-  // With 6 hole cards (accepted open card): pokersolver picks the best 5 of 6.
-  const texasEvals = remaining.map((p) => {
     const hand = Hand.solve(p.holeCards ?? []);
-    return { player: p, hand };
-  });
+    texasEvalMap.set(p.sessionToken, { hand });
+  }
 
-  // Show all cards at showdown — include both Omaha and Texas hand names
-  for (const { player, hand } of omahaEvals) {
-    const texasEval = texasEvals.find((t) => t.player.sessionToken === player.sessionToken);
-    const texasName = texasEval ? texasEval.hand.descr : '';
+  // Showdown cards — show both evaluations for each player
+  for (const p of remaining) {
+    const oE = omahaEvalMap.get(p.sessionToken);
+    const tE = texasEvalMap.get(p.sessionToken);
     result.showdownCards.push({
-      sessionToken: player.sessionToken,
-      cards: player.holeCards ?? [],
-      handName: `${hand.descr} | Draw: ${texasName}`,
+      sessionToken: p.sessionToken,
+      cards: p.holeCards ?? [],
+      handName: `Omaha: ${oE?.hand?.descr ?? '?'} | Draw: ${tE?.hand?.descr ?? '?'}`,
     });
   }
 
-  // Split pot in half (round down each half, odd chip to Omaha winner)
-  const halfPot = Math.floor(totalPot / 2);
-  const omahaShare = halfPot + (totalPot % 2); // odd chip here
-  const texasShare = halfPot;
+  // ──────────────────────────────────────────────────────────────────────
+  // Process each pot separately with correct eligibility
+  // For each pot: split 50/50 between Omaha winner and Draw winner
+  //               (only among eligible players for that pot)
+  // If a side pot has only 1 eligible player, they scoop it entirely
+  //   (no split — they were the only one who could win it)
+  // ──────────────────────────────────────────────────────────────────────
 
-  // Find Omaha winner(s)
-  const omahaWinners = Hand.winners(omahaEvals.map((e) => e.hand));
-  const omahaWinnerEvals = omahaEvals.filter((e) => omahaWinners.includes(e.hand));
+  // For drawmahaResult: track totals from the main pot (first pot)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let mainPotOmahaWinner: { player: Player; hand: any } | null = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let mainPotTexasWinner: { player: Player; hand: any } | null = null;
+  let mainPotOmahaAmount = 0;
+  let mainPotTexasAmount = 0;
 
-  // Find Texas winner(s)
-  const texasWinners = Hand.winners(texasEvals.map((e) => e.hand));
-  const texasWinnerEvals = texasEvals.filter((e) => texasWinners.includes(e.hand));
+  for (let potIndex = 0; potIndex < allPots.length; potIndex++) {
+    const pot = allPots[potIndex];
+    const eligible = remaining.filter((p) => pot.eligiblePlayers.includes(p.sessionToken));
 
-  // Distribute Omaha share
-  const omahaPerWinner = Math.floor(omahaShare / omahaWinnerEvals.length);
-  const omahaRemainder = omahaShare - omahaPerWinner * omahaWinnerEvals.length;
-  for (let i = 0; i < omahaWinnerEvals.length; i++) {
-    const { player, hand } = omahaWinnerEvals[i];
-    const share = omahaPerWinner + (i === 0 ? omahaRemainder : 0);
-    player.chips += share;
-    const existing = result.winnings.find((w) => w.sessionToken === player.sessionToken);
-    if (existing) {
-      existing.amount += share;
-    } else {
-      result.winnings.push({ sessionToken: player.sessionToken, amount: share, handDescription: `Omaha: ${hand.descr}` });
+    if (eligible.length === 0 || pot.amount === 0) continue;
+
+    if (eligible.length === 1) {
+      // Only one player can win this pot — they take it all regardless of hand strength
+      const winner = eligible[0];
+      addWinnings(winner, pot.amount);
+      console.log(`[Drawmaha] Pot #${potIndex} (${pot.amount}): ${winner.nick} wins uncontested`);
+      continue;
+    }
+
+    // Multiple eligible players — split this pot 50/50
+    const halfPot = Math.floor(pot.amount / 2);
+    const omahaShare = halfPot + (pot.amount % 2); // odd chip → Omaha winner
+    const texasShare = halfPot;
+
+    // Omaha winner(s) for this pot
+    const omahaEligible = eligible.map((p) => ({
+      player: p,
+      ...omahaEvalMap.get(p.sessionToken)!,
+    }));
+    const omahaWinnerHands = Hand.winners(omahaEligible.map((e) => e.hand));
+    const omahaWinners = omahaEligible.filter((e) => omahaWinnerHands.includes(e.hand));
+
+    // Draw (Texas) winner(s) for this pot
+    const texasEligible = eligible.map((p) => ({
+      player: p,
+      ...texasEvalMap.get(p.sessionToken)!,
+    }));
+    const texasWinnerHands = Hand.winners(texasEligible.map((e) => e.hand));
+    const texasWinners = texasEligible.filter((e) => texasWinnerHands.includes(e.hand));
+
+    // Distribute Omaha share
+    const omahaPerWinner = Math.floor(omahaShare / omahaWinners.length);
+    const omahaRemainder = omahaShare % omahaWinners.length;
+    omahaWinners.forEach(({ player, hand }, i) => {
+      const share = omahaPerWinner + (i === 0 ? omahaRemainder : 0);
+      addWinnings(player, share, `Omaha: ${hand.descr}`);
+    });
+
+    // Distribute Draw share
+    const texasPerWinner = Math.floor(texasShare / texasWinners.length);
+    const texasRemainder = texasShare % texasWinners.length;
+    texasWinners.forEach(({ player, hand }, i) => {
+      const share = texasPerWinner + (i === 0 ? texasRemainder : 0);
+      addWinnings(player, share, `Draw: ${hand.descr}`);
+    });
+
+    const omahaDescr = omahaWinners[0]?.hand?.descr ?? '?';
+    const texasDescr = texasWinners[0]?.hand?.descr ?? '?';
+    console.log(
+      `[Drawmaha] Pot #${potIndex} (${pot.amount}): ` +
+      `Omaha → ${omahaWinners[0]?.player?.nick} (${omahaDescr}) +${omahaShare}  |  ` +
+      `Draw → ${texasWinners[0]?.player?.nick} (${texasDescr}) +${texasShare}`,
+    );
+
+    // Record main pot result for drawmahaResult (used for UI display)
+    if (potIndex === 0) {
+      mainPotOmahaWinner = omahaWinners[0] ?? null;
+      mainPotTexasWinner = texasWinners[0] ?? null;
+      mainPotOmahaAmount = omahaShare;
+      mainPotTexasAmount = texasShare;
     }
   }
 
-  // Distribute Texas share
-  const texasPerWinner = Math.floor(texasShare / texasWinnerEvals.length);
-  const texasRemainder = texasShare - texasPerWinner * texasWinnerEvals.length;
-  for (let i = 0; i < texasWinnerEvals.length; i++) {
-    const { player, hand } = texasWinnerEvals[i];
-    const share = texasPerWinner + (i === 0 ? texasRemainder : 0);
-    player.chips += share;
-    const existing = result.winnings.find((w) => w.sessionToken === player.sessionToken);
-    if (existing) {
-      existing.amount += share;
-    } else {
-      result.winnings.push({ sessionToken: player.sessionToken, amount: share, handDescription: `Texas: ${hand.descr}` });
+  // drawmahaResult — describes the MAIN POT split for the UI
+  if (mainPotOmahaWinner && mainPotTexasWinner) {
+    const omahaDescr = mainPotOmahaWinner.hand?.descr ?? '?';
+    const texasDescr = mainPotTexasWinner.hand?.descr ?? '?';
+    const isScoop = mainPotOmahaWinner.player.sessionToken === mainPotTexasWinner.player.sessionToken;
+    if (isScoop) {
+      console.log(`[Drawmaha] SCOOP by ${mainPotOmahaWinner.player.nick}`);
     }
+    result.drawmahaResult = {
+      omahaWinner: {
+        sessionToken: mainPotOmahaWinner.player.sessionToken,
+        amount: mainPotOmahaAmount,
+        handDescription: omahaDescr,
+      },
+      texasWinner: {
+        sessionToken: mainPotTexasWinner.player.sessionToken,
+        amount: mainPotTexasAmount,
+        handDescription: texasDescr,
+      },
+    };
   }
 
-  // Check for scoop (same player wins both)
-  const omahaWinnerToken = omahaWinnerEvals[0].player.sessionToken;
-  const texasWinnerToken = texasWinnerEvals[0].player.sessionToken;
-
-  const omahaDescr = omahaWinnerEvals[0]?.hand?.descr ?? omahaWinnerEvals[0]?.hand?.name ?? '?';
-  const texasDescr = texasWinnerEvals[0]?.hand?.descr ?? texasWinnerEvals[0]?.hand?.name ?? '?';
-
-  console.log(`[Drawmaha result] Omaha winner: ${omahaWinnerEvals[0]?.player?.nick} (${omahaDescr}) +${omahaShare}`);
-  console.log(`[Drawmaha result] Texas winner: ${texasWinnerEvals[0]?.player?.nick} (${texasDescr}) +${texasShare}`);
-  if (omahaWinnerToken === texasWinnerToken) {
-    console.log(`[Drawmaha result] SCOOP by ${omahaWinnerEvals[0]?.player?.nick}`);
+  // Highlight the Omaha winner's 2+3 cards from the main pot
+  if (mainPotOmahaWinner) {
+    const oE = omahaEvalMap.get(mainPotOmahaWinner.player.sessionToken);
+    if (oE) result.winningCards = [...oE.holeUsed, ...oE.boardUsed];
   }
-
-  result.drawmahaResult = {
-    omahaWinner: {
-      sessionToken: omahaWinnerToken,
-      amount: omahaShare,
-      handDescription: omahaDescr,
-    },
-    texasWinner: {
-      sessionToken: texasWinnerToken,
-      amount: texasShare,
-      handDescription: texasDescr,
-    },
-  };
-
-  // winningCards: highlight the Omaha winner's 2+3 cards
-  const omahaFirst = omahaWinnerEvals[0];
-  result.winningCards = [...omahaFirst.holeUsed, ...omahaFirst.boardUsed];
 
   room.gameState.phase = 'showdown';
   room.gameState.currentPlayerSeat = null;
