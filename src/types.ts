@@ -46,6 +46,8 @@ export interface Player {
   preferredVariant: GameVariant;
   // Session tracking: total chips added by admin (for buy-in/profit summary)
   totalBuyIn: number;
+  // Chips to add/remove after current hand ends (for mid-hand admin adjustments)
+  pendingChipsAdjustment: number;
 }
 
 export interface RoomSettings {
@@ -151,7 +153,8 @@ export interface Room {
   players: Player[];
   settings: RoomSettings;
   gameState: GameState | null;
-  messages: ChatMessage[]; // chat history (kept while room exists)
+  messages: ChatMessage[];
+  paused: boolean; // admin can pause the game // chat history (kept while room exists)
   // Persistent session summary — includes players who left
   sessionSummary: SessionResult[];
 }
@@ -189,6 +192,10 @@ export interface ClientToServerEvents {
     payload: { variant: GameVariant },
     callback?: (response: { ok: boolean; error?: string }) => void,
   ) => void;
+
+  // Admin: pause/unpause the game
+  'game:pause': (callback?: (response: { ok: boolean; error?: string }) => void) => void;
+  'game:unpause': (callback?: (response: { ok: boolean; error?: string }) => void) => void;
 
   // Drawmaha — Draw phase: submit which cards to discard (0–5 indices)
   'game:draw-discard': (

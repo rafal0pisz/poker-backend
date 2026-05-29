@@ -147,6 +147,26 @@ function scheduleDrawSubmitTimer(roomId: string) {
   drawSubmitTimers.set(roomId, timer);
 }
 
+function applyPendingChips(room: Room) {
+  let applied = false;
+  for (const player of room.players) {
+    const pending = player.pendingChipsAdjustment || 0;
+    if (pending !== 0) {
+      const adjustment = pending > 0
+        ? pending
+        : Math.max(-player.chips, pending); // can't go below 0
+      player.chips = Math.max(0, player.chips + adjustment);
+      player.totalBuyIn += Math.max(0, pending);
+      player.pendingChipsAdjustment = 0;
+      if (player.chips > 0 && (player.status === 'no-chips' || player.status === 'waiting')) {
+        player.status = 'waiting';
+      }
+      applied = true;
+    }
+  }
+  return applied;
+}
+
 function broadcastRoomState(room: Room) {
   for (const player of room.players) {
     const socketId = sessionToSocket.get(player.sessionToken);
@@ -342,7 +362,11 @@ function progressGame(roomId: string) {
     if (desc) emitSystemMessage(roomId, desc);
 
     clearActionTimer(roomId); // hand over
-    setTimeout(() => tryStartNextHand(roomId), 6000);
+    setTimeout(() => {
+      const r = roomManager.getRoom(roomId);
+      if (r && applyPendingChips(r)) broadcastRoomState(r);
+      tryStartNextHand(roomId);
+    }, 6000);
     return;
   }
 
@@ -358,7 +382,11 @@ function progressGame(roomId: string) {
       if (desc) emitSystemMessage(roomId, desc);
 
       clearActionTimer(roomId); // hand over
-      setTimeout(() => tryStartNextHand(roomId), 6000);
+      setTimeout(() => {
+      const r = roomManager.getRoom(roomId);
+      if (r && applyPendingChips(r)) broadcastRoomState(r);
+      tryStartNextHand(roomId);
+    }, 6000);
       return;
     }
     const deck = roomManager.getDeck(roomId);
@@ -544,6 +572,9 @@ io.on('connection', (socket) => {
     if (!room) return callback?.({ ok: false, error: 'Room not found' });
 
     clearActionTimer(roomId); // player acted — cancel auto-action timer
+    if (room.paused) {
+      return callback?.({ ok: false, error: '⏸ Game is paused by admin' });
+    }
     const result = performAction(room, sessionToken, payload.action, payload.amount);
     if (!result.ok) {
       return callback?.({ ok: false, error: result.error });
@@ -745,8 +776,14 @@ io.on('connection', (socket) => {
     const target = room.players.find((p) => p.sessionToken === payload.targetSessionToken);
     if (!target) return callback?.({ ok: false, error: 'Player not found' });
 
-    target.chips += payload.amount;
-    target.totalBuyIn += payload.amount; // track for session summary
+    if (room.gameState && (target.status === 'playing' || target.status === 'all-in')) {
+      // Player is active in a hand — queue the chips to be applied after the hand
+      target.pendingChipsAdjustment = (target.pendingChipsAdjustment || 0) + payload.amount;
+      emitSystemMessage(roomId, `${admin.nick} queued +${payload.amount} chips for ${target.nick} (applied after this hand)`);
+    } else {
+      target.chips += payload.amount;
+      target.totalBuyIn += payload.amount;
+    }
     if (target.status === 'no-chips' || target.status === 'spectator') {
       target.status = 'waiting';
     }
@@ -798,16 +835,15 @@ io.on('connection', (socket) => {
     if (!target) return callback?.({ ok: false, error: 'Player not found' });
 
     if (room.gameState && (target.status === 'playing' || target.status === 'all-in')) {
-      return callback?.({
-        ok: false,
-        error: 'Cannot remove chips from active player during a hand. Wait for the hand to finish.',
-      });
-    }
-
-    const actualRemoved = Math.min(payload.amount, target.chips);
-    target.chips -= actualRemoved;
-    if (target.chips <= 0 && target.status === 'waiting') {
-      target.status = 'no-chips';
+      // Player is active — queue the removal for after the hand
+      target.pendingChipsAdjustment = (target.pendingChipsAdjustment || 0) - payload.amount;
+      emitSystemMessage(roomId, `${admin.nick} queued -${payload.amount} chips for ${target.nick} (applied after this hand)`);
+    } else {
+      const actualRemoved = Math.min(payload.amount, target.chips);
+      target.chips -= actualRemoved;
+      if (target.chips <= 0 && target.status === 'waiting') {
+        target.status = 'no-chips';
+      }
     }
 
     console.log(`[admin:remove-chips] -${actualRemoved} from ${target.nick}`);
@@ -850,6 +886,39 @@ io.on('connection', (socket) => {
         emitSystemMessage(result.roomId, `${admin.nick} removed ${targetNick} from the room`);
       }
     }
+    callback?.({ ok: true });
+  });
+
+  // ===== Pause / Unpause =====
+  socket.on('game:pause', (callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback?.({ ok: false, error: 'No session' });
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback?.({ ok: false, error: 'Room not found' });
+    const player = room.players.find((p) => p.sessionToken === sessionToken);
+    if (!player || (player.role !== 'admin' && player.role !== 'vice-admin')) {
+      return callback?.({ ok: false, error: 'No permission' });
+    }
+    room.paused = true;
+    broadcastRoomState(room);
+    emitSystemMessage(roomId, `⏸ ${player.nick} paused the game`);
+    callback?.({ ok: true });
+  });
+
+  socket.on('game:unpause', (callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback?.({ ok: false, error: 'No session' });
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback?.({ ok: false, error: 'Room not found' });
+    const player = room.players.find((p) => p.sessionToken === sessionToken);
+    if (!player || (player.role !== 'admin' && player.role !== 'vice-admin')) {
+      return callback?.({ ok: false, error: 'No permission' });
+    }
+    room.paused = false;
+    broadcastRoomState(room);
+    emitSystemMessage(roomId, `▶ ${player.nick} resumed the game`);
     callback?.({ ok: true });
   });
 
