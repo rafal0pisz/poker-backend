@@ -36,6 +36,7 @@ class RoomManager {
       totalBetInHand: 0,
       hasActedThisRound: false,
       preferredVariant: 'texas',
+      totalBuyIn: settings.startingBuyIn, // initial buy-in from room creation
     };
 
     const room: Room = {
@@ -45,6 +46,7 @@ class RoomManager {
       settings,
       gameState: null,
       messages: [],
+      sessionSummary: [],
     };
 
     this.rooms.set(roomId, room);
@@ -102,6 +104,7 @@ class RoomManager {
       totalBetInHand: 0,
       hasActedThisRound: false,
       preferredVariant: 'texas',
+      totalBuyIn: settings.startingBuyIn, // initial buy-in from room creation
     };
 
     room.players.push(newPlayer);
@@ -144,6 +147,27 @@ class RoomManager {
     this.rateLimits.delete(sessionToken);
     const room = this.rooms.get(roomId);
     if (!room) return null;
+
+    // Save to session summary before removing
+    const leavingPlayer = room.players.find((p) => p.sessionToken === sessionToken);
+    if (leavingPlayer) {
+      const existing = room.sessionSummary.find((s) => s.sessionToken === sessionToken);
+      if (existing) {
+        // Update if already in summary (e.g. reconnected player)
+        existing.finalChips = leavingPlayer.chips;
+        existing.netResult = leavingPlayer.chips - existing.totalBuyIn;
+        existing.leftAt = Date.now();
+      } else {
+        room.sessionSummary.push({
+          sessionToken: leavingPlayer.sessionToken,
+          nick: leavingPlayer.nick,
+          totalBuyIn: leavingPlayer.totalBuyIn,
+          finalChips: leavingPlayer.chips,
+          netResult: leavingPlayer.chips - leavingPlayer.totalBuyIn,
+          leftAt: Date.now(),
+        });
+      }
+    }
 
     room.players = room.players.filter((p) => p.sessionToken !== sessionToken);
 

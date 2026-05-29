@@ -551,14 +551,10 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
 
   // Build ordered list of all pots (main pot first, then side pots in creation order)
   // Each pot has an amount and a set of eligible session tokens.
-  const allPots: SidePot[] = [];
-  if (room.gameState.pot > 0) {
-    allPots.push({
-      amount: room.gameState.pot,
-      eligiblePlayers: remaining.map((p) => p.sessionToken),
-    });
-  }
-  allPots.push(...room.gameState.sidePots);
+  // All pots stored in sidePots with correct eligibility (see collectBets).
+  const allPots: SidePot[] = room.gameState.sidePots.length > 0
+    ? [...room.gameState.sidePots]
+    : [{ amount: room.gameState.pot, eligiblePlayers: remaining.map((p) => p.sessionToken) }];
 
   const totalPot = allPots.reduce((s, p) => s + p.amount, 0);
 
@@ -867,7 +863,7 @@ export function finishHand(room: Room): HandResult {
 
   if (remaining.length === 1) {
     const winner = remaining[0];
-    const totalPot = room.gameState.pot + room.gameState.sidePots.reduce((s, p) => s + p.amount, 0);
+    const totalPot = allPots.reduce((s, p) => s + p.amount, 0);
     winner.chips += totalPot;
     result.winnings.push({ sessionToken: winner.sessionToken, amount: totalPot });
   } else {
@@ -893,14 +889,10 @@ export function finishHand(room: Room): HandResult {
       return { hand };
     };
 
-    const allPots: SidePot[] = [];
-    if (room.gameState.pot > 0) {
-      allPots.push({
-        amount: room.gameState.pot,
-        eligiblePlayers: remaining.map((p) => p.sessionToken),
-      });
-    }
-    allPots.push(...room.gameState.sidePots);
+    // Use sidePots with correct eligibility. Fallback to pot only if sidePots empty (no all-ins).
+    const allPots: SidePot[] = room.gameState.sidePots.length > 0
+      ? [...room.gameState.sidePots]
+      : [{ amount: room.gameState.pot, eligiblePlayers: remaining.map((p) => p.sessionToken) }];
 
     const evaluations = new Map<string, ReturnType<typeof evaluateHand>>();
     for (const p of remaining) {
@@ -1007,9 +999,23 @@ function collectBets(room: Room): void {
   );
 
   if (allInPlayers.length === 0) {
+    // No all-ins — simple case: all contributors are eligible for this pot level.
+    // Always push to sidePots with eligibility so finishHand can use it correctly.
     const total = contributions.reduce((s, c) => s + c.amount, 0);
-    room.gameState.pot += total;
+    const eligible = contributions.map((c) => c.sessionToken);
+    // Merge into the last side pot if it has the same eligible set (common street-by-street betting)
+    const last = room.gameState.sidePots[room.gameState.sidePots.length - 1];
+    if (
+      last &&
+      last.eligiblePlayers.length === eligible.length &&
+      eligible.every((t) => last.eligiblePlayers.includes(t))
+    ) {
+      last.amount += total;
+    } else {
+      room.gameState.sidePots.push({ amount: total, eligiblePlayers: eligible });
+    }
   } else {
+    // At least one all-in: split into separate pots per contribution level
     const sortedContributions = [...contributions].sort((a, b) => a.amount - b.amount);
     let previousLevel = 0;
     const eligibleSoFar = new Set(contributions.map((c) => c.sessionToken));
@@ -1028,13 +1034,18 @@ function collectBets(room: Room): void {
       }
 
       if (potAmount > 0) {
-        if (room.gameState.sidePots.length === 0 && room.gameState.pot === 0) {
-          room.gameState.pot += potAmount;
+        // ALWAYS use sidePots — never pot directly. This ensures eligibility is always tracked.
+        // The last side pot with same eligibility can be merged (e.g. multiple streets same players)
+        const eligible = Array.from(eligibleSoFar);
+        const last = room.gameState.sidePots[room.gameState.sidePots.length - 1];
+        if (
+          last &&
+          last.eligiblePlayers.length === eligible.length &&
+          eligible.every((t) => last.eligiblePlayers.includes(t))
+        ) {
+          last.amount += potAmount;
         } else {
-          room.gameState.sidePots.push({
-            amount: potAmount,
-            eligiblePlayers: Array.from(eligibleSoFar),
-          });
+          room.gameState.sidePots.push({ amount: potAmount, eligiblePlayers: eligible });
         }
       }
 
@@ -1058,6 +1069,11 @@ function collectBets(room: Room): void {
 
   for (const player of room.players) {
     player.currentBet = 0;
+  }
+
+  // Sync room.gameState.pot to sum of sidePots for UI display
+  if (room.gameState) {
+    room.gameState.pot = room.gameState.sidePots.reduce((s, p) => s + p.amount, 0);
   }
 }
 

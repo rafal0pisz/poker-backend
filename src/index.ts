@@ -746,6 +746,7 @@ io.on('connection', (socket) => {
     if (!target) return callback?.({ ok: false, error: 'Player not found' });
 
     target.chips += payload.amount;
+    target.totalBuyIn += payload.amount; // track for session summary
     if (target.status === 'no-chips' || target.status === 'spectator') {
       target.status = 'waiting';
     }

@@ -44,6 +44,8 @@ export interface Player {
   // Dealer's Choice — preferred game variant when this player is the dealer
   // Default: 'texas'. Changed via 'game:set-variant' event.
   preferredVariant: GameVariant;
+  // Session tracking: total chips added by admin (for buy-in/profit summary)
+  totalBuyIn: number;
 }
 
 export interface RoomSettings {
@@ -134,6 +136,15 @@ export interface ChatMessage {
   timestamp: number;
 }
 
+export interface SessionResult {
+  sessionToken: string;
+  nick: string;
+  totalBuyIn: number;    // total chips received from admin
+  finalChips: number;    // chips when player left (or current chips)
+  netResult: number;     // finalChips - totalBuyIn (positive = profit)
+  leftAt: number;        // timestamp of leaving (0 if still in room)
+}
+
 export interface Room {
   id: string;
   createdAt: number;
@@ -141,6 +152,8 @@ export interface Room {
   settings: RoomSettings;
   gameState: GameState | null;
   messages: ChatMessage[]; // chat history (kept while room exists)
+  // Persistent session summary — includes players who left
+  sessionSummary: SessionResult[];
 }
 
 // ===== CLIENT → SERVER EVENTS =====
