@@ -135,7 +135,7 @@ function scheduleDrawSubmitTimer(roomId: string) {
     for (const player of pending) {
       console.log(`[draw-timeout] ${player.nick} auto stand-pat in ${roomId}`);
       performDrawDiscard(r, player.sessionToken, [], deck);
-      emitSystemMessage(roomId, `${player.nick} timed out — stand pat`);
+      emitSystemMessage(roomId, `⏱ ${player.nick} timed out — stands pat (keeps all cards)`);
     }
 
     if (pending.length > 0) {
@@ -309,7 +309,7 @@ function advanceRevealPhase(roomId: string) {
       console.log(`[Drawmaha] Auto-rejecting for ${nextPlayer.nick} (timeout)`);
       const autoRejectDeck = roomManager.getDeck(roomId);
       if (autoRejectDeck) performDrawDecide(r, nextPlayer.sessionToken, false, autoRejectDeck);
-      emitSystemMessage(roomId, `${nextPlayer.nick} timed out — card rejected`);
+      emitSystemMessage(roomId, `⏱ ${nextPlayer.nick} timed out — open card rejected, drew blind card`);
       advanceRevealPhase(roomId);
     }
   }, 15000);
@@ -576,6 +576,19 @@ io.on('connection', (socket) => {
       socket.emit('game:your-cards', player.holeCards);
     }
 
+    // System message: how many cards the player exchanged
+    const discardCount = payload.discardIndices.length;
+    const playerForMsg = room.players.find((p) => p.sessionToken === sessionToken);
+    if (playerForMsg) {
+      if (discardCount === 0) {
+        emitSystemMessage(roomId, `🂠 ${playerForMsg.nick} stands pat (keeps all 5 cards)`);
+      } else if (discardCount === 1) {
+        emitSystemMessage(roomId, `🂠 ${playerForMsg.nick} exchanges 1 card — open card revealed`);
+      } else {
+        emitSystemMessage(roomId, `🂠 ${playerForMsg.nick} exchanges ${discardCount} cards`);
+      }
+    }
+
     callback?.({ ok: true });
     broadcastRoomState(room);
 
@@ -614,8 +627,10 @@ io.on('connection', (socket) => {
       socket.emit('game:your-cards', player.holeCards);
     }
 
-    const action = payload.accept ? 'accepted the open card' : 'rejected — drew blind card';
-    emitSystemMessage(roomId, `${player?.nick} ${action}`);
+    const action = payload.accept
+      ? `✅ ${player?.nick} accepted the open card`
+      : `🂠 ${player?.nick} rejected the open card — drew a blind card instead`;
+    emitSystemMessage(roomId, action);
 
     callback?.({ ok: true });
     broadcastRoomState(room);
