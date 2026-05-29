@@ -861,6 +861,11 @@ export function finishHand(room: Room): HandResult {
     winningCards: [],
   };
 
+  // Build pot list here so it's available in both branches (single winner and multi)
+  const allPots: SidePot[] = room.gameState.sidePots.length > 0
+    ? [...room.gameState.sidePots]
+    : [{ amount: room.gameState.pot, eligiblePlayers: remaining.map((p) => p.sessionToken) }];
+
   if (remaining.length === 1) {
     const winner = remaining[0];
     const totalPot = allPots.reduce((s, p) => s + p.amount, 0);
@@ -888,11 +893,6 @@ export function finishHand(room: Room): HandResult {
       const hand = Hand.solve([...holeCards, ...board]);
       return { hand };
     };
-
-    // Use sidePots with correct eligibility. Fallback to pot only if sidePots empty (no all-ins).
-    const allPots: SidePot[] = room.gameState.sidePots.length > 0
-      ? [...room.gameState.sidePots]
-      : [{ amount: room.gameState.pot, eligiblePlayers: remaining.map((p) => p.sessionToken) }];
 
     const evaluations = new Map<string, ReturnType<typeof evaluateHand>>();
     for (const p of remaining) {

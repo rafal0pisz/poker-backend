@@ -104,7 +104,7 @@ class RoomManager {
       totalBetInHand: 0,
       hasActedThisRound: false,
       preferredVariant: 'texas',
-      totalBuyIn: settings.startingBuyIn, // initial buy-in from room creation
+      totalBuyIn: 0, // chips received via admin panel (tracked separately)
     };
 
     room.players.push(newPlayer);
