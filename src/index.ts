@@ -834,22 +834,24 @@ io.on('connection', (socket) => {
     const target = room.players.find((p) => p.sessionToken === payload.targetSessionToken);
     if (!target) return callback?.({ ok: false, error: 'Player not found' });
 
+    let actualRemoved = 0;
+
     if (room.gameState && (target.status === 'playing' || target.status === 'all-in')) {
       // Player is active — queue the removal for after the hand
       target.pendingChipsAdjustment = (target.pendingChipsAdjustment || 0) - payload.amount;
       emitSystemMessage(roomId, `${admin.nick} queued -${payload.amount} chips for ${target.nick} (applied after this hand)`);
     } else {
-      const actualRemoved = Math.min(payload.amount, target.chips);
+      actualRemoved = Math.min(payload.amount, target.chips);
       target.chips -= actualRemoved;
       if (target.chips <= 0 && target.status === 'waiting') {
         target.status = 'no-chips';
       }
+      console.log(`[admin:remove-chips] -${actualRemoved} from ${target.nick}`);
+      emitSystemMessage(roomId, `${admin.nick} removed ${actualRemoved} chips from ${target.nick}`);
     }
 
-    console.log(`[admin:remove-chips] -${actualRemoved} from ${target.nick}`);
     broadcastRoomState(room);
     callback?.({ ok: true });
-    emitSystemMessage(roomId, `${admin.nick} removed ${actualRemoved} chips from ${target.nick}`);
   });
 
   socket.on('admin:remove-player', (payload, callback) => {
