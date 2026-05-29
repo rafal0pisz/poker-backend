@@ -1,9 +1,11 @@
-// Texas Hold'em game engine
+// Texas Hold'em / Omaha / Drawmaha game engine
 // Central object managing hand progression
 
 import { shuffledDeck, type Card } from './deck.js';
 import type {
   ActionType,
+  DrawPlayerState,
+  DrawState,
   GameVariant,
   HandPhase,
   HandResult,
@@ -18,7 +20,7 @@ const { Hand } = pokersolverImport as any;
 
 /**
  * Generates all C(n, k) combinations of `k` elements from `arr`.
- * Used for Omaha hand evaluation.
+ * Used for Omaha / Drawmaha hand evaluation.
  */
 function combinations<T>(arr: T[], k: number): T[][] {
   if (k === 0) return [[]];
@@ -32,20 +34,15 @@ function combinations<T>(arr: T[], k: number): T[][] {
 
 /**
  * Solves an Omaha hand: best 5-card hand using EXACTLY 2 hole cards + 3 board cards.
- * This is the defining rule of Omaha — different from Texas Hold'em where you can use any 5.
- *
- * Tries all C(4,2) × C(5,3) = 6 × 10 = 60 combinations and picks the best.
- *
- * Returns the winning Hand object (from pokersolver) plus the specific 2 hole + 3 board
- * cards that formed the winning combination — for UI highlighting.
+ * Tries all C(4,2) × C(5,3) = 60 combinations and picks the best.
  */
 export function solveOmaha(
   holeCards: Card[],
   boardCards: Card[],
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): { hand: any; holeUsed: Card[]; boardUsed: Card[] } {
-  if (holeCards.length !== 4) {
-    throw new Error(`Omaha requires exactly 4 hole cards, got ${holeCards.length}`);
+  if (holeCards.length < 2) {
+    throw new Error(`Omaha requires at least 2 hole cards, got ${holeCards.length}`);
   }
   if (boardCards.length < 3) {
     throw new Error(`Need at least 3 board cards for Omaha, got ${boardCards.length}`);
@@ -117,15 +114,11 @@ export function startNewHand(room: Room): { deck: Card[] } {
 
   // ===== DEALER'S CHOICE: variant comes from dealer's preference =====
   const dealerPlayer = room.players.find((p) => p.seat === dealerSeat);
-  let variant: GameVariant = dealerPlayer?.preferredVariant || 'texas';
+  const variant: GameVariant = dealerPlayer?.preferredVariant || 'texas';
 
-  // Drawmaha is not yet implemented (Milestone 3). Fall back to Texas.
-  if (variant === 'drawmaha') {
-    variant = 'texas';
-  }
-
-  // Number of hole cards based on variant (drawmaha was already handled above)
-  const cardsPerPlayer = variant === 'omaha' ? 4 : 2;
+  // Number of hole cards based on variant
+  // Texas: 2, Omaha: 4, Drawmaha: 5
+  const cardsPerPlayer = variant === 'omaha' ? 4 : variant === 'drawmaha' ? 5 : 2;
 
   const deck = shuffledDeck();
   for (const player of activePlayers) {
@@ -190,6 +183,11 @@ export function performAction(
 ): { ok: true } | { ok: false; error: string } {
   if (!room.gameState) {
     return { ok: false, error: 'Game not started' };
+  }
+
+  // Block regular actions during draw phases
+  if (room.gameState.phase === 'draw') {
+    return { ok: false, error: 'Use game:draw-discard during draw phase' };
   }
 
   const player = room.players.find((p) => p.sessionToken === sessionToken);
@@ -301,6 +299,399 @@ export function performAction(
   return { ok: true };
 }
 
+// ===== DRAWMAHA — DRAW PHASE =====
+
+/**
+ * Initializes DrawState when entering the draw phase.
+ * Called by advancePhase when transitioning flop → draw.
+ */
+export function initDrawState(room: Room): DrawState {
+  const active = room.players.filter(
+    (p) => p.status === 'playing' || p.status === 'all-in',
+  );
+
+  const playerStates: Record<string, DrawPlayerState> = {};
+  for (const p of active) {
+    playerStates[p.sessionToken] = {
+      discardIndices: [],
+      revealedCard: null,
+      accepted: null,
+      hasDrawn: false,
+      hasDecided: false,
+    };
+  }
+
+  return {
+    playerStates,
+    openCards: {},
+    decideDeadline: null,
+    currentDecidingSeat: null,
+  };
+}
+
+/**
+ * Player submits which cards to discard (0–5 indices).
+ * All-in players automatically keep all cards.
+ * Returns new cards drawn from deck for this player.
+ */
+export function performDrawDiscard(
+  room: Room,
+  sessionToken: string,
+  discardIndices: number[],
+  deck: Card[],
+): { ok: true; openCard: Card | null } | { ok: false; error: string } {
+  if (!room.gameState || room.gameState.phase !== 'draw') {
+    return { ok: false, error: 'Not in draw phase' };
+  }
+  if (!room.gameState.drawState) {
+    return { ok: false, error: 'Draw state not initialized' };
+  }
+
+  const player = room.players.find((p) => p.sessionToken === sessionToken);
+  if (!player) return { ok: false, error: 'Player not found' };
+
+  const drawState = room.gameState.drawState;
+  const ps = drawState.playerStates[sessionToken];
+  if (!ps) return { ok: false, error: 'Player not in draw state' };
+  if (ps.hasDrawn) return { ok: false, error: 'Already submitted draw' };
+
+  // Validate indices
+  const holeCount = player.holeCards?.length ?? 5;
+  const uniqueIndices = [...new Set(discardIndices)];
+  for (const idx of uniqueIndices) {
+    if (idx < 0 || idx >= holeCount) {
+      return { ok: false, error: `Invalid card index: ${idx}` };
+    }
+  }
+
+  ps.discardIndices = uniqueIndices;
+  ps.hasDrawn = true;
+
+  if (uniqueIndices.length === 1) {
+    // ── Exactly 1 card discarded ──
+    // Correct sequence:
+    //   1. Remove the discarded card → player has 4 cards
+    //   2. Reveal an open card to the table (visible to everyone)
+    //   3. Player decides (accept → gets open card → 5 cards,
+    //                      reject → gets blind card from deck → 5 cards)
+    // At no point should the player have 5 cards BEFORE making their decision.
+    player.holeCards!.splice(uniqueIndices[0], 1); // 5 → 4 cards
+    const openCard = deck.pop();
+    if (!openCard) return { ok: false, error: 'Deck is empty for open card' };
+    ps.revealedCard = openCard;
+    drawState.openCards[sessionToken] = openCard;
+    // hasDecided stays false — player must accept or reject in reveal phase
+    return { ok: true, openCard };
+
+  } else if (uniqueIndices.length === 0) {
+    // Stand pat — keep all 5 cards, skip reveal phase
+    ps.revealedCard = null;
+    ps.accepted = null;
+    ps.hasDecided = true;
+    return { ok: true, openCard: null };
+
+  } else {
+    // 2–5 cards discarded — replace each with new card from deck, skip reveal phase
+    if (player.holeCards) {
+      for (const idx of uniqueIndices) {
+        const newCard = deck.pop();
+        if (!newCard) return { ok: false, error: 'Deck is empty' };
+        player.holeCards[idx] = newCard;
+      }
+    }
+    ps.revealedCard = null;
+    ps.accepted = null;
+    ps.hasDecided = true;
+    return { ok: true, openCard: null };
+  }
+}
+
+/**
+ * Check if all active players have submitted their draw.
+ */
+export function isDrawPhaseComplete(room: Room): boolean {
+  if (!room.gameState?.drawState) return false;
+  const states = Object.values(room.gameState.drawState.playerStates);
+  return states.length > 0 && states.every((s) => s.hasDrawn);
+}
+
+/**
+ * Player decides to accept or reject their open card.
+ * Accept: open card is added as 6th hole card (they'll use best 5 for Omaha eval)
+ * Reject: open card is discarded, player keeps current 5
+ *
+ * Players decide in seat order. Auto-reject fires after 15s timer.
+ */
+export function performDrawDecide(
+  room: Room,
+  sessionToken: string,
+  accept: boolean,
+  deck: Card[],
+): { ok: true } | { ok: false; error: string } {
+  if (!room.gameState || room.gameState.phase !== 'draw') {
+    return { ok: false, error: 'Not in draw phase' };
+  }
+  if (!room.gameState.drawState) {
+    return { ok: false, error: 'Draw state not initialized' };
+  }
+
+  const player = room.players.find((p) => p.sessionToken === sessionToken);
+  if (!player) return { ok: false, error: 'Player not found' };
+
+  // Must be this player's turn to decide
+  if (room.gameState.drawState.currentDecidingSeat !== player.seat) {
+    return { ok: false, error: "Not your turn to decide" };
+  }
+
+  const drawState = room.gameState.drawState;
+  const ps = drawState.playerStates[sessionToken];
+  if (!ps) return { ok: false, error: 'Player not in draw state' };
+  if (ps.hasDecided) return { ok: false, error: 'Already decided' };
+
+  if (!player.holeCards) player.holeCards = [];
+
+  if (accept && ps.revealedCard) {
+    // Accept: add open card → player goes from 4 → 5 cards
+    player.holeCards.push(ps.revealedCard);
+    console.log(`[Drawmaha] ${player.nick} accepted open card ${ps.revealedCard} → ${player.holeCards.length} cards`);
+  } else {
+    // Reject: open card discarded, draw 1 blind card from deck → 4 → 5 cards
+    // Only the player sees this new card (sent via game:your-cards privately)
+    const blindCard = deck.pop();
+    if (!blindCard) {
+      console.error('[Drawmaha] Deck empty for blind card replacement');
+      // Fallback: keep 4 cards (edge case, shouldn't happen in practice)
+    } else {
+      player.holeCards.push(blindCard);
+      console.log(`[Drawmaha] ${player.nick} rejected open card, drew blind card → ${player.holeCards.length} cards`);
+    }
+  }
+
+  ps.accepted = accept;
+  ps.hasDecided = true;
+
+  return { ok: true };
+}
+
+/**
+ * Returns the next player who needs to decide on their open card,
+ * in seat order starting from dealer+1.
+ */
+export function getNextDecidingPlayer(room: Room): Player | null {
+  if (!room.gameState?.drawState) return null;
+
+  const active = room.players
+    .filter((p) => p.status === 'playing' || p.status === 'all-in')
+    .sort((a, b) => {
+      // Start from dealer+1, wrap around
+      const dealer = room.gameState!.dealerSeat;
+      const aSeat = a.seat > dealer ? a.seat : a.seat + 100;
+      const bSeat = b.seat > dealer ? b.seat : b.seat + 100;
+      return aSeat - bSeat;
+    });
+
+  const drawState = room.gameState.drawState;
+  return active.find((p) => {
+    const ps = drawState.playerStates[p.sessionToken];
+    return ps && ps.hasDrawn && !ps.hasDecided && ps.revealedCard !== null;
+  }) ?? null;
+}
+
+/**
+ * Check if all active players have decided on their open cards.
+ */
+export function isRevealPhaseComplete(room: Room): boolean {
+  if (!room.gameState?.drawState) return false;
+  const states = Object.values(room.gameState.drawState.playerStates);
+  return states.length > 0 && states.every((s) => s.hasDecided);
+}
+
+// ===== DRAWMAHA — SHOWDOWN (split pot) =====
+
+/**
+ * Finalize a Drawmaha hand — split pot 50/50 between:
+ * - Omaha winner (EXACTLY 2 hole + 3 board)
+ * - Texas winner (best 5 of all cards)
+ *
+ * Odd chip goes to Omaha winner.
+ * If one player wins both halves, they scoop.
+ */
+export function finalizeDrawmahaHand(room: Room): HandResult {
+  if (!room.gameState) throw new Error('No game state');
+
+  collectBets(room);
+
+  const remaining = room.players.filter(
+    (p) => p.status === 'playing' || p.status === 'all-in',
+  );
+
+  const totalPot =
+    room.gameState.pot +
+    room.gameState.sidePots.reduce((s, p) => s + p.amount, 0);
+
+  const result: HandResult = {
+    winnings: [],
+    showdownCards: [],
+    winningCards: [],
+  };
+
+  if (remaining.length === 1) {
+    // Everyone else folded — scoop
+    const winner = remaining[0];
+    winner.chips += totalPot;
+    result.winnings.push({ sessionToken: winner.sessionToken, amount: totalPot });
+    room.gameState.phase = 'showdown';
+    room.gameState.currentPlayerSeat = null;
+    room.gameState.actionDeadline = null;
+    room.gameState.lastHandResult = result;
+    room.gameState.pot = 0;
+    room.gameState.sidePots = [];
+    for (const p of room.players) p.holeCards = undefined;
+    return result;
+  }
+
+  const board = room.gameState.communityCards;
+
+  console.log(`[Drawmaha showdown] board=${board.length} cards, players=${remaining.length}`);
+  for (const p of remaining) {
+    console.log(`  ${p.nick}: ${p.holeCards?.length ?? 0} hole cards: ${p.holeCards?.join(',')}`);
+  }
+
+  // Safety: if board < 5 (shouldn't happen but guard anyway)
+  if (board.length < 3) {
+    // Fallback: give pot to first player (degenerate case)
+    console.error('[Drawmaha] Board too short for evaluation:', board.length);
+    const winner = remaining[0];
+    winner.chips += totalPot;
+    result.winnings.push({ sessionToken: winner.sessionToken, amount: totalPot });
+    room.gameState.phase = 'showdown';
+    room.gameState.currentPlayerSeat = null;
+    room.gameState.actionDeadline = null;
+    room.gameState.lastHandResult = result;
+    room.gameState.pot = 0;
+    room.gameState.sidePots = [];
+    for (const p of room.players) p.holeCards = undefined;
+    return result;
+  }
+
+  // Evaluate Omaha half (EXACTLY 2 hole + 3 board)
+  // Works with 5 or 6 hole cards — combinations(n, 2) handles any n >= 2
+  const omahaEvals = remaining.map((p) => {
+    try {
+      const { hand, holeUsed, boardUsed } = solveOmaha(p.holeCards ?? [], board);
+      return { player: p, hand, holeUsed, boardUsed };
+    } catch (err) {
+      console.error(`[Drawmaha] Omaha eval failed for ${p.nick}:`, err);
+      throw err;
+    }
+  });
+
+  // Evaluate Texas half: best 5-card hand from HOLE CARDS ONLY (no board).
+  // This is the "draw" component of Drawmaha — you draw to improve your own hand,
+  // independent of the community cards.
+  // With 5 hole cards: pokersolver picks the best 5-card hand.
+  // With 6 hole cards (accepted open card): pokersolver picks the best 5 of 6.
+  const texasEvals = remaining.map((p) => {
+    const hand = Hand.solve(p.holeCards ?? []);
+    return { player: p, hand };
+  });
+
+  // Show all cards at showdown — include both Omaha and Texas hand names
+  for (const { player, hand } of omahaEvals) {
+    const texasEval = texasEvals.find((t) => t.player.sessionToken === player.sessionToken);
+    const texasName = texasEval ? texasEval.hand.descr : '';
+    result.showdownCards.push({
+      sessionToken: player.sessionToken,
+      cards: player.holeCards ?? [],
+      handName: `${hand.descr} | Draw: ${texasName}`,
+    });
+  }
+
+  // Split pot in half (round down each half, odd chip to Omaha winner)
+  const halfPot = Math.floor(totalPot / 2);
+  const omahaShare = halfPot + (totalPot % 2); // odd chip here
+  const texasShare = halfPot;
+
+  // Find Omaha winner(s)
+  const omahaWinners = Hand.winners(omahaEvals.map((e) => e.hand));
+  const omahaWinnerEvals = omahaEvals.filter((e) => omahaWinners.includes(e.hand));
+
+  // Find Texas winner(s)
+  const texasWinners = Hand.winners(texasEvals.map((e) => e.hand));
+  const texasWinnerEvals = texasEvals.filter((e) => texasWinners.includes(e.hand));
+
+  // Distribute Omaha share
+  const omahaPerWinner = Math.floor(omahaShare / omahaWinnerEvals.length);
+  const omahaRemainder = omahaShare - omahaPerWinner * omahaWinnerEvals.length;
+  for (let i = 0; i < omahaWinnerEvals.length; i++) {
+    const { player, hand } = omahaWinnerEvals[i];
+    const share = omahaPerWinner + (i === 0 ? omahaRemainder : 0);
+    player.chips += share;
+    const existing = result.winnings.find((w) => w.sessionToken === player.sessionToken);
+    if (existing) {
+      existing.amount += share;
+    } else {
+      result.winnings.push({ sessionToken: player.sessionToken, amount: share, handDescription: `Omaha: ${hand.descr}` });
+    }
+  }
+
+  // Distribute Texas share
+  const texasPerWinner = Math.floor(texasShare / texasWinnerEvals.length);
+  const texasRemainder = texasShare - texasPerWinner * texasWinnerEvals.length;
+  for (let i = 0; i < texasWinnerEvals.length; i++) {
+    const { player, hand } = texasWinnerEvals[i];
+    const share = texasPerWinner + (i === 0 ? texasRemainder : 0);
+    player.chips += share;
+    const existing = result.winnings.find((w) => w.sessionToken === player.sessionToken);
+    if (existing) {
+      existing.amount += share;
+    } else {
+      result.winnings.push({ sessionToken: player.sessionToken, amount: share, handDescription: `Texas: ${hand.descr}` });
+    }
+  }
+
+  // Check for scoop (same player wins both)
+  const omahaWinnerToken = omahaWinnerEvals[0].player.sessionToken;
+  const texasWinnerToken = texasWinnerEvals[0].player.sessionToken;
+
+  const omahaDescr = omahaWinnerEvals[0]?.hand?.descr ?? omahaWinnerEvals[0]?.hand?.name ?? '?';
+  const texasDescr = texasWinnerEvals[0]?.hand?.descr ?? texasWinnerEvals[0]?.hand?.name ?? '?';
+
+  console.log(`[Drawmaha result] Omaha winner: ${omahaWinnerEvals[0]?.player?.nick} (${omahaDescr}) +${omahaShare}`);
+  console.log(`[Drawmaha result] Texas winner: ${texasWinnerEvals[0]?.player?.nick} (${texasDescr}) +${texasShare}`);
+  if (omahaWinnerToken === texasWinnerToken) {
+    console.log(`[Drawmaha result] SCOOP by ${omahaWinnerEvals[0]?.player?.nick}`);
+  }
+
+  result.drawmahaResult = {
+    omahaWinner: {
+      sessionToken: omahaWinnerToken,
+      amount: omahaShare,
+      handDescription: omahaDescr,
+    },
+    texasWinner: {
+      sessionToken: texasWinnerToken,
+      amount: texasShare,
+      handDescription: texasDescr,
+    },
+  };
+
+  // winningCards: highlight the Omaha winner's 2+3 cards
+  const omahaFirst = omahaWinnerEvals[0];
+  result.winningCards = [...omahaFirst.holeUsed, ...omahaFirst.boardUsed];
+
+  room.gameState.phase = 'showdown';
+  room.gameState.currentPlayerSeat = null;
+  room.gameState.actionDeadline = null;
+  room.gameState.lastHandResult = result;
+  room.gameState.pot = 0;
+  room.gameState.sidePots = [];
+
+  for (const p of room.players) p.holeCards = undefined;
+
+  return result;
+}
+
 export function isBettingRoundComplete(room: Room): boolean {
   if (!room.gameState) return false;
   const active = room.players.filter((p) => p.status === 'playing');
@@ -324,6 +715,8 @@ export function isHandComplete(room: Room): boolean {
 export function advancePhase(room: Room, deck: Card[]): void {
   if (!room.gameState) return;
 
+  const variant = room.gameState.variant;
+
   collectBets(room);
 
   for (const player of room.players) {
@@ -335,10 +728,20 @@ export function advancePhase(room: Room, deck: Card[]): void {
   room.gameState.currentBet = 0;
   room.gameState.minRaise = room.settings.bigBlind;
 
-  const phaseOrder: HandPhase[] = ['preflop', 'flop', 'turn', 'river', 'showdown'];
-  const currentIdx = phaseOrder.indexOf(room.gameState.phase);
-  const nextPhase = phaseOrder[currentIdx + 1];
-  if (!nextPhase) return;
+  // Drawmaha phase order: preflop → flop → draw → turn → river → showdown
+  // Texas/Omaha:          preflop → flop → turn → river → showdown
+  let nextPhase: HandPhase;
+
+  if (variant === 'drawmaha') {
+    const drawmahaOrder: HandPhase[] = ['preflop', 'flop', 'draw', 'turn', 'river', 'showdown'];
+    const currentIdx = drawmahaOrder.indexOf(room.gameState.phase);
+    nextPhase = drawmahaOrder[currentIdx + 1] ?? 'showdown';
+  } else {
+    const standardOrder: HandPhase[] = ['preflop', 'flop', 'turn', 'river', 'showdown'];
+    const currentIdx = standardOrder.indexOf(room.gameState.phase);
+    nextPhase = standardOrder[currentIdx + 1] ?? 'showdown';
+  }
+
   room.gameState.phase = nextPhase;
 
   if (nextPhase === 'flop') {
@@ -347,6 +750,12 @@ export function advancePhase(room: Room, deck: Card[]): void {
   } else if (nextPhase === 'turn' || nextPhase === 'river') {
     deck.pop();
     room.gameState.communityCards.push(deck.pop()!);
+  } else if (nextPhase === 'draw') {
+    // Initialize draw state — no community cards dealt here
+    room.gameState.drawState = initDrawState(room);
+    room.gameState.currentPlayerSeat = null; // all players act simultaneously
+    room.gameState.actionDeadline = null;
+    return; // early return — draw phase doesn't use normal betting
   }
 
   if (nextPhase !== 'showdown') {
@@ -377,6 +786,11 @@ export function finishHand(room: Room): HandResult {
     throw new Error('No game state');
   }
 
+  // Drawmaha uses its own split-pot finisher
+  if (room.gameState.variant === 'drawmaha') {
+    return finalizeDrawmahaHand(room);
+  }
+
   collectBets(room);
 
   const remaining = room.players.filter(
@@ -394,20 +808,14 @@ export function finishHand(room: Room): HandResult {
     const totalPot = room.gameState.pot + room.gameState.sidePots.reduce((s, p) => s + p.amount, 0);
     winner.chips += totalPot;
     result.winnings.push({ sessionToken: winner.sessionToken, amount: totalPot });
-    // No showdown — no winning cards to highlight
   } else {
     const variant = room.gameState.variant;
 
-    // Helper: evaluate a player's hand based on the current variant
-    // Returns the pokersolver Hand object, plus (for Omaha) the specific
-    // 2 hole + 3 board cards that formed the winning combination.
     const evaluateHand = (
       player: Player,
     ): {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       hand: any;
-      // For Omaha: the 5 cards (2 hole + 3 board) that won
-      // For Texas: undefined (any 5 of 7 cards may win)
       winningHoleCards?: Card[];
       winningBoardCards?: Card[];
     } => {
@@ -419,7 +827,6 @@ export function finishHand(room: Room): HandResult {
         return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };
       }
 
-      // Texas Hold'em: use all 7 cards, pokersolver picks the best 5
       const hand = Hand.solve([...holeCards, ...board]);
       return { hand };
     };
@@ -433,7 +840,6 @@ export function finishHand(room: Room): HandResult {
     }
     allPots.push(...room.gameState.sidePots);
 
-    // Pre-evaluate everyone (once) for showdownCards list
     const evaluations = new Map<string, ReturnType<typeof evaluateHand>>();
     for (const p of remaining) {
       const ev = evaluateHand(p);
@@ -460,20 +866,16 @@ export function finishHand(room: Room): HandResult {
         .filter((h) => winners.includes(h.hand))
         .map((h) => h.sessionToken);
 
-      // Capture winning 5-card combination from MAIN pot (potIndex === 0)
-      // for UI highlighting.
       if (potIndex === 0 && winners.length > 0 && result.winningCards.length === 0) {
         const firstWinnerToken = winningSessionTokens[0];
         const winnerEval = evaluations.get(firstWinnerToken);
 
         if (winnerEval?.winningHoleCards && winnerEval?.winningBoardCards) {
-          // Omaha: we know exactly which 2 hole + 3 board cards won
           result.winningCards = [
             ...winnerEval.winningHoleCards,
             ...winnerEval.winningBoardCards,
           ];
         } else {
-          // Texas: pokersolver tells us the 5 winning cards
           const firstWinnerHand = winners[0] as {
             cards?: Array<{ value: string; suit: string } | string>;
           };

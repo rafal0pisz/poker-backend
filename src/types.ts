@@ -4,9 +4,9 @@ import type { Card } from './deck.js';
 export type PlayerRole = 'player' | 'vice-admin' | 'admin';
 
 // Game variants for Dealer's Choice (Mix Poker)
-// Texas: 2 hole cards + 5 community
-// Omaha: 4 hole cards + 5 community, must use 2 hole + 3 community
-// Drawmaha: 5 hole cards + 5 community + draw phase + split pot
+// Texas:    2 hole cards + 5 community, best 5 of 7
+// Omaha:    4 hole cards + 5 community, must use EXACTLY 2 hole + 3 community
+// Drawmaha: 5 hole cards + draw phase after flop + 1-card reveal + split pot (Omaha half + Texas half)
 export type GameVariant = 'texas' | 'omaha' | 'drawmaha';
 
 export type PlayerStatus =
@@ -54,7 +54,7 @@ export interface RoomSettings {
   actionTimeoutSec: 15 | 30 | 60;
 }
 
-export type HandPhase = 'preflop' | 'flop' | 'turn' | 'river' | 'showdown';
+export type HandPhase = 'preflop' | 'flop' | 'draw' | 'turn' | 'river' | 'showdown';
 
 export interface SidePot {
   amount: number;
@@ -65,8 +65,39 @@ export interface HandResult {
   winnings: { sessionToken: string; amount: number; handDescription?: string }[];
   showdownCards: { sessionToken: string; cards: Card[]; handName: string }[];
   // The cards that formed the winning hand (5 cards). Used to highlight on the UI.
-  // Identifies which of community + each player's hole cards won the hand.
   winningCards: Card[];
+  // Drawmaha split pot result (optional)
+  drawmahaResult?: {
+    omahaWinner: { sessionToken: string; amount: number; handDescription: string };
+    texasWinner: { sessionToken: string; amount: number; handDescription: string };
+  };
+}
+
+// ===== DRAWMAHA DRAW STATE =====
+
+export interface DrawPlayerState {
+  // Cards player chose to DISCARD (indices 0-4 into holeCards). Empty = keep all.
+  discardIndices: number[];
+  // The single card revealed to table (from their new cards after draw)
+  revealedCard: Card | null;
+  // Whether they accepted or rejected the revealed card
+  accepted: boolean | null;
+  // Whether this player has submitted their draw action
+  hasDrawn: boolean;
+  // Whether this player has submitted their reveal decision
+  hasDecided: boolean;
+}
+
+export interface DrawState {
+  // Map of sessionToken → draw state
+  playerStates: Record<string, DrawPlayerState>;
+  // The one card from the deck that's shown to the table for each player
+  // after they discard. Keyed by sessionToken.
+  openCards: Record<string, Card>;
+  // Timer deadline for reveal-decision phase (15 seconds per player)
+  decideDeadline: number | null;
+  // Current player deciding on their open card
+  currentDecidingSeat: number | null;
 }
 
 export interface GameState {
@@ -84,6 +115,8 @@ export interface GameState {
   lastAction: Action | null;
   handNumber: number;
   lastHandResult: HandResult | null;
+  // Only present during Drawmaha draw/draw-reveal phases
+  drawState?: DrawState;
 }
 
 // ===== CHAT =====
@@ -142,6 +175,18 @@ export interface ClientToServerEvents {
     callback?: (response: { ok: boolean; error?: string }) => void,
   ) => void;
 
+  // Drawmaha — Draw phase: submit which cards to discard (0–5 indices)
+  'game:draw-discard': (
+    payload: { discardIndices: number[] },
+    callback?: (response: { ok: boolean; error?: string }) => void,
+  ) => void;
+
+  // Drawmaha — Reveal phase: accept or reject open card
+  'game:draw-decide': (
+    payload: { accept: boolean },
+    callback?: (response: { ok: boolean; error?: string }) => void,
+  ) => void;
+
   'admin:add-chips': (
     payload: { targetSessionToken: string; amount: number },
     callback?: (response: { ok: boolean; error?: string }) => void,
@@ -177,6 +222,8 @@ export interface ServerToClientEvents {
   'room:closed': (reason: string) => void;
   'game:your-cards': (cards: Card[]) => void;
   'game:hand-result': (result: HandResult) => void;
+  // Drawmaha: sent to each player individually when open card is assigned
+  'game:draw-open-card': (payload: { sessionToken: string; card: Card }) => void;
   'chat:message': (message: ChatMessage) => void; // single new message
   error: (message: string) => void;
 }

@@ -12,6 +12,11 @@ import {
   advancePhase,
   nextPlayer,
   finishHand,
+  performDrawDiscard,
+  performDrawDecide,
+  isDrawPhaseComplete,
+  isRevealPhaseComplete,
+  getNextDecidingPlayer,
 } from './game-engine.js';
 import type {
   ClientToServerEvents,
@@ -29,7 +34,7 @@ app.use(cors({ origin: FRONTEND_URL }));
 app.use(express.json());
 
 app.get('/', (_req, res) => {
-  res.json({ status: 'ok', service: 'poker-backend', version: '0.4.0' });
+  res.json({ status: 'ok', service: 'poker-backend', version: '0.5.0' });
 });
 
 const httpServer = createServer(app);
@@ -40,6 +45,9 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents, Record<string,
 );
 
 const sessionToSocket = new Map<string, string>();
+
+// Drawmaha decide timers — keyed by roomId
+const drawDecideTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function broadcastRoomState(room: Room) {
   for (const player of room.players) {
@@ -112,6 +120,24 @@ function describeHandResult(room: Room): string {
   const result = room.gameState?.lastHandResult;
   if (!result) return '';
 
+  // Drawmaha split pot description
+  if (result.drawmahaResult) {
+    const { omahaWinner, texasWinner } = result.drawmahaResult;
+    const omahaPlayer = room.players.find((p) => p.sessionToken === omahaWinner.sessionToken);
+    const texasPlayer = room.players.find((p) => p.sessionToken === texasWinner.sessionToken);
+    const omahaNick = omahaPlayer?.nick || '?';
+    const texasNick = texasPlayer?.nick || '?';
+
+    if (omahaWinner.sessionToken === texasWinner.sessionToken) {
+      return `🎯 ${omahaNick} scooped the pot (${omahaWinner.handDescription} / ${texasWinner.handDescription})`;
+    }
+    return (
+      `🃏 Split pot — ` +
+      `${omahaNick} won ${omahaWinner.amount} (Omaha: ${omahaWinner.handDescription}), ` +
+      `${texasNick} won ${texasWinner.amount} (Texas: ${texasWinner.handDescription})`
+    );
+  }
+
   const parts = result.winnings.map((w) => {
     const player = room.players.find((p) => p.sessionToken === w.sessionToken);
     const nick = player?.nick || '?';
@@ -121,9 +147,91 @@ function describeHandResult(room: Room): string {
   return parts.join(', ');
 }
 
+// ===== DRAWMAHA: reveal phase sequencer =====
+
+/**
+ * Starts the reveal-decide phase for the next player who hasn't decided yet.
+ * Sets a 15s auto-reject timer.
+ */
+function advanceRevealPhase(roomId: string) {
+  // Clear any existing timer
+  const existingTimer = drawDecideTimers.get(roomId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    drawDecideTimers.delete(roomId);
+  }
+
+  const room = roomManager.getRoom(roomId);
+  if (!room || !room.gameState?.drawState) return;
+
+  const nextPlayer = getNextDecidingPlayer(room);
+
+  if (!nextPlayer) {
+    // All players decided — advance to turn
+    console.log(`[Drawmaha] All reveal decisions done in ${roomId}, advancing to turn`);
+    room.gameState.drawState.currentDecidingSeat = null;
+    room.gameState.drawState.decideDeadline = null;
+    const deck = roomManager.getDeck(roomId);
+    if (!deck) return;
+    advancePhase(room, deck); // draw → turn
+    broadcastRoomState(room);
+
+    const stillCanAct = room.players.filter(
+      (p) => p.status === 'playing' && !p.hasActedThisRound,
+    );
+    if (stillCanAct.length <= 1 && room.gameState.phase !== 'showdown') {
+      setTimeout(() => progressGame(roomId), 1500);
+    }
+    return;
+  }
+
+  // Set current deciding seat + 15s deadline
+  room.gameState.drawState.currentDecidingSeat = nextPlayer.seat;
+  room.gameState.drawState.decideDeadline = Date.now() + 15000;
+  broadcastRoomState(room);
+
+  // Emit open card to everyone (table can see it)
+  const openCard = room.gameState.drawState.openCards[nextPlayer.sessionToken];
+  if (openCard) {
+    io.to(roomId).emit('game:draw-open-card', {
+      sessionToken: nextPlayer.sessionToken,
+      card: openCard,
+    });
+  }
+
+  console.log(`[Drawmaha] ${nextPlayer.nick} has 15s to decide on open card`);
+
+  // Auto-reject after 15 seconds
+  const timer = setTimeout(() => {
+    const r = roomManager.getRoom(roomId);
+    if (!r || !r.gameState?.drawState) return;
+    const ds = r.gameState.drawState.playerStates[nextPlayer.sessionToken];
+    if (ds && !ds.hasDecided) {
+      console.log(`[Drawmaha] Auto-rejecting for ${nextPlayer.nick} (timeout)`);
+      const autoRejectDeck = roomManager.getDeck(roomId);
+      if (autoRejectDeck) performDrawDecide(r, nextPlayer.sessionToken, false, autoRejectDeck);
+      emitSystemMessage(roomId, `${nextPlayer.nick} timed out — card rejected`);
+      advanceRevealPhase(roomId);
+    }
+  }, 15000);
+
+  drawDecideTimers.set(roomId, timer);
+}
+
 function progressGame(roomId: string) {
   const room = roomManager.getRoom(roomId);
   if (!room || !room.gameState) return;
+
+  // ===== DRAWMAHA: draw phase handling =====
+  if (room.gameState.phase === 'draw') {
+    // Check if all players have submitted their draw
+    if (isDrawPhaseComplete(room)) {
+      console.log(`[Drawmaha] All draws submitted in ${roomId}, starting reveal phase`);
+      advanceRevealPhase(roomId);
+    }
+    // During draw phase we don't run normal betting logic
+    return;
+  }
 
   if (isHandComplete(room) && room.gameState.phase !== 'showdown') {
     const result = finishHand(room);
@@ -131,7 +239,6 @@ function progressGame(roomId: string) {
     broadcastRoomState(room);
     io.to(roomId).emit('game:hand-result', result);
 
-    // System message
     const desc = describeHandResult(room);
     if (desc) emitSystemMessage(roomId, desc);
 
@@ -157,6 +264,9 @@ function progressGame(roomId: string) {
     if (!deck) return;
     advancePhase(room, deck);
     broadcastRoomState(room);
+
+    // If we just entered the draw phase, no need to check stillCanAct
+    if (room.gameState.phase === 'draw') return;
 
     const stillCanAct = room.players.filter(
       (p) => p.status === 'playing' && !p.hasActedThisRound,
@@ -333,6 +443,78 @@ io.on('connection', (socket) => {
     progressGame(roomId);
   });
 
+  // ===== DRAWMAHA: Draw phase — submit discard =====
+  socket.on('game:draw-discard', (payload, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) {
+      return callback?.({ ok: false, error: 'No session' });
+    }
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback?.({ ok: false, error: 'Room not found' });
+
+    const deck = roomManager.getDeck(roomId);
+    if (!deck) return callback?.({ ok: false, error: 'No deck' });
+
+    const result = performDrawDiscard(room, sessionToken, payload.discardIndices, deck);
+    if (!result.ok) {
+      return callback?.({ ok: false, error: result.error });
+    }
+
+    // Send updated hole cards privately to this player
+    const player = room.players.find((p) => p.sessionToken === sessionToken);
+    if (player?.holeCards) {
+      socket.emit('game:your-cards', player.holeCards);
+    }
+
+    callback?.({ ok: true });
+    broadcastRoomState(room);
+
+    // Check if all players have drawn
+    progressGame(roomId);
+  });
+
+  // ===== DRAWMAHA: Reveal phase — accept or reject open card =====
+  socket.on('game:draw-decide', (payload, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) {
+      return callback?.({ ok: false, error: 'No session' });
+    }
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback?.({ ok: false, error: 'Room not found' });
+
+    const decideDeck = roomManager.getDeck(roomId);
+    if (!decideDeck) return callback?.({ ok: false, error: 'No deck' });
+    const result = performDrawDecide(room, sessionToken, payload.accept, decideDeck);
+    if (!result.ok) {
+      return callback?.({ ok: false, error: result.error });
+    }
+
+    // Clear decide timer
+    const timer = drawDecideTimers.get(roomId);
+    if (timer) {
+      clearTimeout(timer);
+      drawDecideTimers.delete(roomId);
+    }
+
+    // Always send updated hole cards — both accept (open card added) and
+    // reject (blind card drawn) change the player's hand to 5 cards.
+    const player = room.players.find((p) => p.sessionToken === sessionToken);
+    if (player?.holeCards) {
+      socket.emit('game:your-cards', player.holeCards);
+    }
+
+    const action = payload.accept ? 'accepted the open card' : 'rejected — drew blind card';
+    emitSystemMessage(roomId, `${player?.nick} ${action}`);
+
+    callback?.({ ok: true });
+    broadcastRoomState(room);
+
+    // Move to next player or advance phase
+    advanceRevealPhase(roomId);
+  });
+
   socket.on('game:sit-out', () => {
     const sessionToken = socket.data.sessionToken;
     const roomId = socket.data.roomId;
@@ -374,8 +556,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Spectator → take a seat. Promotes them to 'no-chips' or 'waiting' depending on
-  // whether they have chips already (e.g. on reconnect they might).
   socket.on('game:take-seat', (callback) => {
     const sessionToken = socket.data.sessionToken;
     const roomId = socket.data.roomId;
@@ -398,7 +578,6 @@ io.on('connection', (socket) => {
     emitSystemMessage(roomId, `${player.nick} took a seat at the table`);
   });
 
-  // Dealer's Choice — set preferred variant for when this player is dealer
   socket.on('game:set-variant', (payload, callback) => {
     const sessionToken = socket.data.sessionToken;
     const roomId = socket.data.roomId;
@@ -443,7 +622,6 @@ io.on('connection', (socket) => {
     if (!target) return callback?.({ ok: false, error: 'Player not found' });
 
     target.chips += payload.amount;
-    // Promote to 'waiting' if the player has no chips or is just a spectator
     if (target.status === 'no-chips' || target.status === 'spectator') {
       target.status = 'waiting';
     }
@@ -550,7 +728,6 @@ io.on('connection', (socket) => {
     callback?.({ ok: true });
   });
 
-  // ===== CHAT =====
   socket.on('chat:send', (payload, callback) => {
     const sessionToken = socket.data.sessionToken;
     const roomId = socket.data.roomId;

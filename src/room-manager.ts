@@ -283,7 +283,18 @@ class RoomManager {
       // are all-in (or there's at most 1 'playing' player who is also already all-in
       // in effect because everyone else is all-in/folded).
       // Strict check: zero players in 'playing' status, at least one all-in.
-      if (anyAllIn && playersWhoCanStillAct.length === 0) {
+      //
+      // DRAWMAHA EXCEPTION: never reveal cards before the draw phase is complete.
+      // Knowing opponents' cards before exchanging would give an unfair advantage.
+      // Cards are hidden during preflop, flop, and the draw phase itself.
+      // They can be revealed normally from the turn onwards.
+      const isDrawmahaPreDraw =
+        room.gameState.variant === 'drawmaha' &&
+        (room.gameState.phase === 'preflop' ||
+          room.gameState.phase === 'flop' ||
+          room.gameState.phase === 'draw');
+
+      if (anyAllIn && playersWhoCanStillAct.length === 0 && !isDrawmahaPreDraw) {
         // Reveal cards of every player still in the hand
         for (const p of stillInHand) {
           revealedTokens.add(p.sessionToken);
