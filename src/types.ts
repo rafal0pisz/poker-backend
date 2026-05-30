@@ -220,7 +220,7 @@ export interface ClientToServerEvents {
 
   'admin:add-chips': (
     payload: { targetSessionToken: string; amount: number },
-    callback?: (response: { ok: boolean; error?: string }) => void,
+    callback?: (response: { ok: boolean; error?: string; queued?: boolean }) => void,
   ) => void;
   'admin:remove-chips': (
     payload: { targetSessionToken: string; amount: number },
