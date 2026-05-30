@@ -299,7 +299,11 @@ function advanceRevealPhase(roomId: string) {
       (p) => p.status === 'playing' && !p.hasActedThisRound,
     );
     if (stillCanAct.length <= 1 && room.gameState.phase !== 'showdown') {
-      setTimeout(() => progressGame(roomId), 1500);
+      const allInRunout =
+        room.players.filter((p) => p.status === 'playing').length === 0 &&
+        room.players.filter((p) => p.status === 'all-in').length >= 2;
+      const delay = allInRunout ? 3500 : 1500;
+      setTimeout(() => progressGame(roomId), delay);
     }
     return;
   }
@@ -407,7 +411,14 @@ function progressGame(roomId: string) {
       (p) => p.status === 'playing' && !p.hasActedThisRound,
     );
     if (stillCanAct.length <= 1 && room.gameState.phase !== 'showdown') {
-      setTimeout(() => progressGame(roomId), 1500);
+      // All-in runout: detect if ALL remaining players are all-in (no one can act).
+      // Use a dramatic delay so players can see each street reveal.
+      // Normal all-in situations (1 player can still act) get standard delay.
+      const allInRunout =
+        room.players.filter((p) => p.status === 'playing').length === 0 &&
+        room.players.filter((p) => p.status === 'all-in').length >= 2;
+      const delay = allInRunout ? 3500 : 1500;
+      setTimeout(() => progressGame(roomId), delay);
     }
     return;
   }
