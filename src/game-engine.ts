@@ -1,7 +1,7 @@
 // Texas Hold'em / Omaha / Drawmaha game engine
 // Central object managing hand progression
 
-import { shuffledDeck, type Card } from './deck.js';
+import { shuffledDeck, shuffle, type Card } from './deck.js';
 import type {
   ActionType,
   DrawPlayerState,

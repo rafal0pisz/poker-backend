@@ -38,6 +38,7 @@ class RoomManager {
       preferredVariant: 'texas',
       totalBuyIn: settings.startingBuyIn, // initial buy-in from room creation
       pendingChipsAdjustment: 0,
+      pendingAction: null,
     };
 
     const room: Room = {
@@ -108,6 +109,7 @@ class RoomManager {
       preferredVariant: 'texas',
       totalBuyIn: 0, // chips received via admin panel (tracked separately)
       pendingChipsAdjustment: 0,
+      pendingAction: null,
     };
 
     room.players.push(newPlayer);
