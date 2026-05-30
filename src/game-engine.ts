@@ -78,6 +78,28 @@ export function solveOmaha(
 }
 
 /**
+ * Collects discarded/folded cards back into the deck and reshuffles them.
+ * Used in Drawmaha when the deck runs out during the draw phase.
+ * Returns number of cards added back.
+ */
+export function refillDeckFromMuck(room: Room, deck: Card[]): number {
+  // Collect cards from folded players (they can't win so their cards are "dead")
+  const muck: Card[] = [];
+  for (const player of room.players) {
+    if (player.status === 'folded' && player.holeCards && player.holeCards.length > 0) {
+      muck.push(...player.holeCards);
+      // Don't clear holeCards — they'll be cleared at hand end, but mark them
+    }
+  }
+  if (muck.length === 0) return 0;
+  // Shuffle the muck and add to bottom of deck
+  const shuffled = shuffle([...muck]);
+  deck.unshift(...shuffled); // add to bottom (next pops from top)
+  console.log(`[Drawmaha] Refilled deck with ${shuffled.length} muck cards from folded players`);
+  return shuffled.length;
+}
+
+/**
  * Starts a new hand.
  * Shuffles deck, deals cards, posts blinds, sets first to act.
  */
@@ -87,6 +109,7 @@ export function startNewHand(room: Room): { deck: Card[] } {
     player.totalBetInHand = 0;
     player.hasActedThisRound = false;
     player.holeCards = undefined;
+    player.pendingAction = null;
 
     if (
       player.status === 'sitting-out' ||
@@ -378,8 +401,16 @@ export function performDrawDiscard(
     //                      reject → gets blind card from deck → 5 cards)
     // At no point should the player have 5 cards BEFORE making their decision.
     player.holeCards!.splice(uniqueIndices[0], 1); // 5 → 4 cards
+    if (deck.length === 0) refillDeckFromMuck(room, deck);
     const openCard = deck.pop();
-    if (!openCard) return { ok: false, error: 'Deck is empty for open card' };
+    if (!openCard) {
+      // Even muck exhausted — stand pat with 4 cards, game continues
+      console.warn(`[Drawmaha] Deck exhausted — ${player.nick} stands pat after splice`);
+      ps.revealedCard = null;
+      ps.accepted = null;
+      ps.hasDecided = true;
+      return { ok: true, openCard: null };
+    }
     ps.revealedCard = openCard;
     drawState.openCards[sessionToken] = openCard;
     // hasDecided stays false — player must accept or reject in reveal phase
@@ -393,11 +424,19 @@ export function performDrawDiscard(
     return { ok: true, openCard: null };
 
   } else {
-    // 2–5 cards discarded — replace each with new card from deck, skip reveal phase
+    // 2–5 cards discarded — replace each with new card from deck, skip reveal phase.
+    // If deck runs out, refill from muck (folded players' cards, reshuffled).
     if (player.holeCards) {
       for (const idx of uniqueIndices) {
+        if (deck.length === 0) {
+          const added = refillDeckFromMuck(room, deck);
+          if (added === 0) {
+            console.warn(`[Drawmaha] Deck + muck exhausted for ${player.nick} — keeping remaining cards`);
+            break; // can't replace remaining cards
+          }
+        }
         const newCard = deck.pop();
-        if (!newCard) return { ok: false, error: 'Deck is empty' };
+        if (!newCard) break;
         player.holeCards[idx] = newCard;
       }
     }
@@ -459,13 +498,15 @@ export function performDrawDecide(
   } else {
     // Reject: open card discarded, draw 1 blind card from deck → 4 → 5 cards
     // Only the player sees this new card (sent via game:your-cards privately)
+    if (deck.length === 0) refillDeckFromMuck(room, deck);
     const blindCard = deck.pop();
     if (!blindCard) {
-      console.error('[Drawmaha] Deck empty for blind card replacement');
-      // Fallback: keep 4 cards (edge case, shouldn't happen in practice)
+      // Deck + muck exhausted — force-accept the open card instead
+      console.warn(`[Drawmaha] Deck exhausted for blind card — ${player.nick} forced to accept open card`);
+      if (ps.revealedCard) player.holeCards.push(ps.revealedCard);
     } else {
       player.holeCards.push(blindCard);
-      console.log(`[Drawmaha] ${player.nick} rejected open card, drew blind card → ${player.holeCards.length} cards`);
+      console.log(`[Drawmaha] ${player.nick} rejected, drew blind card → ${player.holeCards.length} cards`);
     }
   }
 

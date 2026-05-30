@@ -48,6 +48,9 @@ export interface Player {
   totalBuyIn: number;
   // Chips to add/remove after current hand ends (for mid-hand admin adjustments)
   pendingChipsAdjustment: number;
+  // Pre-action: player can select check/fold or fold before their turn
+  // When it becomes their turn, this action fires automatically.
+  pendingAction: 'check-fold' | 'fold' | null;
 }
 
 export interface RoomSettings {
@@ -184,6 +187,12 @@ export interface ClientToServerEvents {
   'game:sit-back': () => void;
   // Spectator → take a seat (join the game when next hand starts)
   'game:take-seat': (
+    callback?: (response: { ok: boolean; error?: string }) => void,
+  ) => void;
+
+  // Pre-action — select action before your turn
+  'game:pre-action': (
+    payload: { action: 'check-fold' | 'fold' | null },
     callback?: (response: { ok: boolean; error?: string }) => void,
   ) => void;
 

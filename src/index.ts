@@ -413,6 +413,32 @@ function progressGame(roomId: string) {
   }
 
   nextPlayer(room);
+
+  // Fire pre-action if the new current player had one queued
+  const newCurrentPlayer = room.players.find(
+    (p) => p.seat === room.gameState?.currentPlayerSeat && p.pendingAction
+  );
+  if (newCurrentPlayer && newCurrentPlayer.pendingAction) {
+    const preAction = newCurrentPlayer.pendingAction;
+    newCurrentPlayer.pendingAction = null;
+    const toCall = (room.gameState?.currentBet ?? 0) - newCurrentPlayer.currentBet;
+    if (preAction === 'fold') {
+      performAction(room, newCurrentPlayer.sessionToken, 'fold');
+      emitSystemMessage(roomId, `${newCurrentPlayer.nick} folded (pre-action)`);
+    } else if (preAction === 'check-fold') {
+      if (toCall === 0) {
+        performAction(room, newCurrentPlayer.sessionToken, 'check');
+        emitSystemMessage(roomId, `${newCurrentPlayer.nick} checked (pre-action)`);
+      } else {
+        performAction(room, newCurrentPlayer.sessionToken, 'fold');
+        emitSystemMessage(roomId, `${newCurrentPlayer.nick} folded (pre-action — had to call ${toCall})`);
+      }
+    }
+    broadcastRoomState(room);
+    progressGame(roomId);
+    return;
+  }
+
   broadcastRoomState(room);
   scheduleActionTimer(roomId);
 }
@@ -921,6 +947,22 @@ io.on('connection', (socket) => {
     room.paused = false;
     broadcastRoomState(room);
     emitSystemMessage(roomId, `▶ ${player.nick} resumed the game`);
+    callback?.({ ok: true });
+  });
+
+  // ===== Pre-action =====
+  socket.on('game:pre-action', (payload, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback?.({ ok: false, error: 'No session' });
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback?.({ ok: false, error: 'Room not found' });
+    const player = room.players.find((p) => p.sessionToken === sessionToken);
+    if (!player) return callback?.({ ok: false, error: 'Player not found' });
+    if (room.gameState?.currentPlayerSeat === player.seat) {
+      return callback?.({ ok: false, error: "It's your turn — act now" });
+    }
+    player.pendingAction = payload.action;
     callback?.({ ok: true });
   });
 
