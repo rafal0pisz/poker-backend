@@ -802,39 +802,60 @@ io.on('connection', (socket) => {
     const target = room.players.find((p) => p.sessionToken === payload.targetSessionToken);
     if (!target) return callback?.({ ok: false, error: 'Player not found' });
 
-    if (room.gameState && (target.status === 'playing' || target.status === 'all-in')) {
-      // Player is active in a hand — queue the chips to be applied after the hand
+    // Determine if player is ACTIVELY IN a running hand (not showdown, not halted).
+    // Showdown phase = hand is over, chips should be applied now even if gameState exists.
+    const isActiveInHand =
+      room.gameState !== null &&
+      room.gameState.phase !== 'showdown' &&
+      (target.status === 'playing' || target.status === 'all-in');
+
+    let queued = false;
+
+    if (isActiveInHand) {
+      // Queue chips — hand is still running, apply after it ends
       target.pendingChipsAdjustment = (target.pendingChipsAdjustment || 0) + payload.amount;
-      emitSystemMessage(roomId, `${admin.nick} queued +${payload.amount} chips for ${target.nick} (applied after this hand)`);
+      queued = true;
+      emitSystemMessage(roomId, `${admin.nick} queued +${payload.amount} chips for ${target.nick} (will apply after this hand)`);
     } else {
+      // Apply immediately — no active hand, or hand is in showdown
       target.chips += payload.amount;
       target.totalBuyIn += payload.amount;
-    }
-    if (target.status === 'no-chips' || target.status === 'spectator') {
-      target.status = 'waiting';
+      if (target.status === 'no-chips' || target.status === 'spectator' || target.status === 'folded') {
+        target.status = 'waiting';
+      }
+      emitSystemMessage(roomId, `${admin.nick} added ${payload.amount} chips to ${target.nick}`);
     }
 
-    console.log(`[admin:add-chips] +${payload.amount} for ${target.nick}`);
+    console.log(`[admin:add-chips] +${payload.amount} for ${target.nick} (queued=${queued})`);
     broadcastRoomState(room);
-    callback?.({ ok: true });
-    emitSystemMessage(roomId, `${admin.nick} added ${payload.amount} chips to ${target.nick}`);
+    // Tell admin whether chips were applied now or queued
+    callback?.({ ok: true, queued });
 
-    const gameHalted =
-      room.gameState !== null &&
-      room.gameState.currentPlayerSeat === null &&
-      room.gameState.phase === 'showdown';
+    // Auto-restart check: try to start a new hand if we now have enough players.
+    // Covers 3 cases:
+    //   1. gameState is null (game never started / ended with no eligible players)
+    //   2. gameState is in showdown and now halted (not enough chips to continue)
+    //   3. Chips were queued but game is in showdown (apply them now too)
+    if (!isActiveInHand) {
+      // Apply any other pending adjustments (in case multiple were queued earlier)
+      applyPendingChips(room);
 
-    if (gameHalted) {
-      const eligible = room.players.filter(
-        (p) =>
-          p.chips > 0 &&
-          p.status !== 'sitting-out' &&
-          p.status !== 'disconnected' &&
-          p.connected,
-      );
-      if (eligible.length >= 2) {
-        console.log(`[admin:add-chips] Resuming game after chip add in ${roomId}`);
-        setTimeout(() => tryStartNextHand(roomId), 1500);
+      const isHalted =
+        !room.gameState ||
+        (room.gameState.currentPlayerSeat === null && room.gameState.phase === 'showdown');
+
+      if (isHalted) {
+        const eligible = room.players.filter(
+          (p) =>
+            p.chips > 0 &&
+            p.status !== 'sitting-out' &&
+            p.status !== 'disconnected' &&
+            p.connected,
+        );
+        if (eligible.length >= 2) {
+          console.log(`[admin:add-chips] Auto-starting next hand in ${roomId} (${eligible.length} eligible)`);
+          setTimeout(() => tryStartNextHand(roomId), 1500);
+        }
       }
     }
   });
