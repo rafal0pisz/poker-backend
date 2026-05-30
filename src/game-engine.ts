@@ -781,6 +781,17 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
       addWinnings(player, share, `Draw: ${hand.descr}`);
     });
 
+    // Safety check: ensure total distributed == pot.amount (no chips lost to rounding)
+    const totalDistributed =
+      omahaPerWinner * omahaWinners.length + omahaRemainder +
+      texasPerWinner * texasWinners.length + texasRemainder;
+    const missing = pot.amount - totalDistributed;
+    if (missing > 0) {
+      // Give any remaining chip(s) to the omaha winner (standard casino rule)
+      addWinnings(omahaWinners[0].player, missing, 'Odd chip');
+      console.warn(`[Drawmaha] Odd chip(s) +${missing} → ${omahaWinners[0].player.nick}`);
+    }
+
     const omahaDescr = omahaWinners[0]?.hand?.descr ?? '?';
     const texasDescr = texasWinners[0]?.hand?.descr ?? '?';
     console.log(
