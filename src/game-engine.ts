@@ -141,7 +141,7 @@ export function startNewHand(room: Room): { deck: Card[] } {
 
   // Number of hole cards based on variant
   // Texas: 2, Omaha: 4, Drawmaha: 5
-  const cardsPerPlayer = variant === 'omaha' ? 4 : variant === 'drawmaha' ? 5 : 2;
+  const cardsPerPlayer = variant === 'omaha' ? 4 : variant === 'drawmaha' ? 5 : variant === 'pineapple' ? 3 : 2;
 
   const deck = shuffledDeck();
   for (const player of activePlayers) {

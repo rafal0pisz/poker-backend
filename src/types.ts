@@ -7,7 +7,7 @@ export type PlayerRole = 'player' | 'vice-admin' | 'admin';
 // Texas:    2 hole cards + 5 community, best 5 of 7
 // Omaha:    4 hole cards + 5 community, must use EXACTLY 2 hole + 3 community
 // Drawmaha: 5 hole cards + draw phase after flop + 1-card reveal + split pot (Omaha half + Texas half)
-export type GameVariant = 'texas' | 'omaha' | 'drawmaha';
+export type GameVariant = 'texas' | 'omaha' | 'drawmaha' | 'pineapple';
 
 export type PlayerStatus =
   | 'playing'
@@ -215,6 +215,11 @@ export interface ClientToServerEvents {
   // Drawmaha — Reveal phase: accept or reject open card
   'game:draw-decide': (
     payload: { accept: boolean },
+    callback?: (response: { ok: boolean; error?: string }) => void,
+  ) => void;
+
+  'admin:transfer': (
+    payload: { targetSessionToken: string },
     callback?: (response: { ok: boolean; error?: string }) => void,
   ) => void;
 

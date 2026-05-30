@@ -982,6 +982,25 @@ io.on('connection', (socket) => {
     callback?.({ ok: true });
   });
 
+  // ===== Admin transfer =====
+  socket.on('admin:transfer', (payload, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback?.({ ok: false, error: 'No session' });
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback?.({ ok: false, error: 'Room not found' });
+    const admin = room.players.find((p) => p.sessionToken === sessionToken);
+    if (!admin || admin.role !== 'admin') return callback?.({ ok: false, error: 'Only admin can transfer' });
+    const target = room.players.find((p) => p.sessionToken === payload.targetSessionToken);
+    if (!target) return callback?.({ ok: false, error: 'Player not found' });
+    // Transfer: demote current admin, promote target
+    admin.role = 'player';
+    target.role = 'admin';
+    emitSystemMessage(roomId, `👑 ${admin.nick} transferred admin to ${target.nick}`);
+    broadcastRoomState(room);
+    callback?.({ ok: true });
+  });
+
   // ===== Pre-action =====
   socket.on('game:pre-action', (payload, callback) => {
     const sessionToken = socket.data.sessionToken;
