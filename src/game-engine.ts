@@ -100,6 +100,53 @@ export function refillDeckFromMuck(room: Room, deck: Card[]): number {
 }
 
 /**
+ * Crazy Pineapple: 3 hole cards, must use EXACTLY 1 or 2 from hand (not all 3).
+ * Best 5-card hand from any combo of 1-2 hole + 3-4 board cards.
+ * This is stricter than Texas (which can use 0-5 hole cards freely).
+ */
+export function solvePineapple(
+  holeCards: Card[],
+  boardCards: Card[],
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+): { hand: any; holeUsed: Card[]; boardUsed: Card[] } {
+  if (holeCards.length < 1) throw new Error('Pineapple requires at least 1 hole card');
+  if (boardCards.length < 3) throw new Error('Need at least 3 board cards for Pineapple');
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let bestHand: any = null;
+  let bestHoleUsed: Card[] = [];
+  let bestBoardUsed: Card[] = [];
+
+  // Try using exactly 1 hole card + 4 board cards
+  const holeSingles = combinations(holeCards, 1);
+  const boardFours = combinations(boardCards, 4);
+  for (const hc of holeSingles) {
+    for (const bc of boardFours) {
+      const hand = Hand.solve([...hc, ...bc]);
+      if (!bestHand || (Hand.winners([bestHand, hand]).includes(hand) && !Hand.winners([bestHand, hand]).includes(bestHand))) {
+        bestHand = hand; bestHoleUsed = hc; bestBoardUsed = bc;
+      }
+    }
+  }
+
+  // Try using exactly 2 hole cards + 3 board cards (only if ≥2 hole cards)
+  if (holeCards.length >= 2) {
+    const holePairs = combinations(holeCards, 2);
+    const boardTriples = combinations(boardCards, 3);
+    for (const hc of holePairs) {
+      for (const bc of boardTriples) {
+        const hand = Hand.solve([...hc, ...bc]);
+        if (!bestHand || (Hand.winners([bestHand, hand]).includes(hand) && !Hand.winners([bestHand, hand]).includes(bestHand))) {
+          bestHand = hand; bestHoleUsed = hc; bestBoardUsed = bc;
+        }
+      }
+    }
+  }
+
+  return { hand: bestHand, holeUsed: bestHoleUsed, boardUsed: bestBoardUsed };
+}
+
+/**
  * Starts a new hand.
  * Shuffles deck, deals cards, posts blinds, sets first to act.
  */
@@ -931,6 +978,13 @@ export function finishHand(room: Room): HandResult {
         return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };
       }
 
+      if (variant === 'pineapple') {
+        // Must use exactly 1 or 2 hole cards — not 0 or 3
+        const { hand, holeUsed, boardUsed } = solvePineapple(holeCards, board);
+        return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };
+      }
+
+      // Texas Hold'em / Drawmaha: free choice of any hole+board cards
       const hand = Hand.solve([...holeCards, ...board]);
       return { hand };
     };
