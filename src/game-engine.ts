@@ -109,41 +109,12 @@ export function solvePineapple(
   boardCards: Card[],
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): { hand: any; holeUsed: Card[]; boardUsed: Card[] } {
-  if (holeCards.length < 1) throw new Error('Pineapple requires at least 1 hole card');
-  if (boardCards.length < 3) throw new Error('Need at least 3 board cards for Pineapple');
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let bestHand: any = null;
-  let bestHoleUsed: Card[] = [];
-  let bestBoardUsed: Card[] = [];
-
-  // Try using exactly 1 hole card + 4 board cards
-  const holeSingles = combinations(holeCards, 1);
-  const boardFours = combinations(boardCards, 4);
-  for (const hc of holeSingles) {
-    for (const bc of boardFours) {
-      const hand = Hand.solve([...hc, ...bc]);
-      if (!bestHand || (Hand.winners([bestHand, hand]).includes(hand) && !Hand.winners([bestHand, hand]).includes(bestHand))) {
-        bestHand = hand; bestHoleUsed = hc; bestBoardUsed = bc;
-      }
-    }
-  }
-
-  // Try using exactly 2 hole cards + 3 board cards (only if ≥2 hole cards)
-  if (holeCards.length >= 2) {
-    const holePairs = combinations(holeCards, 2);
-    const boardTriples = combinations(boardCards, 3);
-    for (const hc of holePairs) {
-      for (const bc of boardTriples) {
-        const hand = Hand.solve([...hc, ...bc]);
-        if (!bestHand || (Hand.winners([bestHand, hand]).includes(hand) && !Hand.winners([bestHand, hand]).includes(bestHand))) {
-          bestHand = hand; bestHoleUsed = hc; bestBoardUsed = bc;
-        }
-      }
-    }
-  }
-
-  return { hand: bestHand, holeUsed: bestHoleUsed, boardUsed: bestBoardUsed };
+  // Crazy Pineapple uses Texas Hold'em rules — free choice of any cards.
+  // Best 5-card hand from any combination of hole cards (0-3) + board cards.
+  // No restriction on how many hole cards must be used (unlike Omaha).
+  const allCards = [...holeCards, ...boardCards];
+  const hand = Hand.solve(allCards);
+  return { hand, holeUsed: holeCards, boardUsed: boardCards };
 }
 
 /**
