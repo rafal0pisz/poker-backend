@@ -539,6 +539,28 @@ io.on('connection', (socket) => {
     const leavingPlayer = room?.players.find((p) => p.sessionToken === sessionToken);
     const leavingNick = leavingPlayer?.nick;
 
+    // If player is leaving during an active hand and has a live bet (e.g. blind),
+    // fold them first so their currentBet gets collected into the pot correctly.
+    if (room?.gameState && leavingPlayer) {
+      const isInHand = leavingPlayer.status === 'playing' || leavingPlayer.status === 'all-in';
+      if (isInHand) {
+        performAction(room, sessionToken, 'fold');
+        // If their fold ends the hand, run progressGame to settle the pot
+        if (isHandComplete(room)) {
+          const result2 = finishHand(room);
+          room.gameState.lastHandResult = result2;
+          broadcastRoomState(room);
+          io.to(roomId!).emit('game:hand-result', result2);
+          clearActionTimer(roomId!);
+          setTimeout(() => {
+            const r = roomManager.getRoom(roomId!);
+            if (r && applyPendingChips(r)) broadcastRoomState(r);
+            tryStartNextHand(roomId!);
+          }, 3000);
+        }
+      }
+    }
+
     const result = roomManager.removePlayer(sessionToken);
     sessionToSocket.delete(sessionToken);
     if (result?.room) {

@@ -156,19 +156,22 @@ class RoomManager {
     // Save to session summary before removing
     const leavingPlayer = room.players.find((p) => p.sessionToken === sessionToken);
     if (leavingPlayer) {
+      // If player is leaving mid-hand, their currentBet is in the pot (not returned yet).
+      // For summary purposes, count chips + currentBet as their actual chip count.
+      const effectiveChips = leavingPlayer.chips + (leavingPlayer.currentBet || 0);
       const existing = room.sessionSummary.find((s) => s.sessionToken === sessionToken);
       if (existing) {
         // Update if already in summary (e.g. reconnected player)
-        existing.finalChips = leavingPlayer.chips;
-        existing.netResult = leavingPlayer.chips - existing.totalBuyIn;
+        existing.finalChips = effectiveChips;
+        existing.netResult = effectiveChips - existing.totalBuyIn;
         existing.leftAt = Date.now();
       } else {
         room.sessionSummary.push({
           sessionToken: leavingPlayer.sessionToken,
           nick: leavingPlayer.nick,
           totalBuyIn: leavingPlayer.totalBuyIn,
-          finalChips: leavingPlayer.chips,
-          netResult: leavingPlayer.chips - leavingPlayer.totalBuyIn,
+          finalChips: effectiveChips,
+          netResult: effectiveChips - leavingPlayer.totalBuyIn,
           leftAt: Date.now(),
         });
       }

@@ -941,6 +941,8 @@ export function finishHand(room: Room): HandResult {
     const totalPot = allPots.reduce((s, p) => s + p.amount, 0);
     winner.chips += totalPot;
     result.winnings.push({ sessionToken: winner.sessionToken, amount: totalPot });
+    const totalChips = room.players.reduce((s, p) => s + p.chips, 0);
+    console.log(`[finishHand] winner=${winner.nick} pot=${totalPot} winner.chips=${winner.chips} allPlayerChips=${totalChips} sidePots=${JSON.stringify(allPots)}`);
   } else {
     const variant = room.gameState.variant;
 
