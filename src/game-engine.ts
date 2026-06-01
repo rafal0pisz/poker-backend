@@ -931,6 +931,25 @@ export function finishHand(room: Room): HandResult {
     winningCards: [],
   };
 
+  // Safety: if sidePots is still empty after collectBets (e.g. all currentBets were 0
+  // because they were already zeroed somehow), recalculate from room.gameState.pot.
+  // Also check for any uncollected currentBets across ALL players (including folded).
+  const uncollected = room.players.reduce((s, p) => s + (p.currentBet || 0), 0);
+  if (uncollected > 0) {
+    // There are still bets not collected — add them to the pot manually
+    room.gameState.pot += uncollected;
+    if (room.gameState.sidePots.length > 0) {
+      room.gameState.sidePots[room.gameState.sidePots.length - 1].amount += uncollected;
+    } else {
+      room.gameState.sidePots.push({
+        amount: uncollected,
+        eligiblePlayers: remaining.map((p) => p.sessionToken),
+      });
+    }
+    room.players.forEach(p => { p.currentBet = 0; });
+    console.warn(`[finishHand] Safety net caught ${uncollected} uncollected chips`);
+  }
+
   // Build pot list here so it's available in both branches (single winner and multi)
   const allPots: SidePot[] = room.gameState.sidePots.length > 0
     ? [...room.gameState.sidePots]
