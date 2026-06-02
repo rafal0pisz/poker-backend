@@ -114,7 +114,20 @@ export function solvePineapple(
   // No restriction on how many hole cards must be used (unlike Omaha).
   const allCards = [...holeCards, ...boardCards];
   const hand = Hand.solve(allCards);
-  return { hand, holeUsed: holeCards, boardUsed: boardCards };
+
+  // hand.cards contains exactly the 5 cards that form the best hand.
+  // Split them back into hole vs board so the frontend highlights only those 5.
+  const winningKeys = new Set(
+    hand.cards.map((c: { value: string; suit: string }) => c.value + c.suit)
+  );
+  const cardKey = (c: Card) => {
+    // Convert internal rank to pokersolver value (T→10 not needed — pokersolver uses 'T')
+    return c.rank + c.suit;
+  };
+  const holeUsed = holeCards.filter(c => winningKeys.has(cardKey(c)));
+  const boardUsed = boardCards.filter(c => winningKeys.has(cardKey(c)));
+
+  return { hand, holeUsed, boardUsed };
 }
 
 /**
