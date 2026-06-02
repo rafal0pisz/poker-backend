@@ -165,6 +165,7 @@ export interface Room {
 // ===== CLIENT → SERVER EVENTS =====
 
 export interface ClientToServerEvents {
+  'game:show-hand': () => void;
   'room:create': (
     payload: { nick: string; settings: RoomSettings },
     callback: (response: CreateRoomResponse) => void,
@@ -260,6 +261,7 @@ export interface ServerToClientEvents {
   'game:hand-result': (result: HandResult) => void;
   // Drawmaha: sent to each player individually when open card is assigned
   'game:draw-open-card': (payload: { sessionToken: string; card: Card }) => void;
+  'game:hand-revealed': (payload: { sessionToken: string; nick: string; cards: Card[] }) => void;
   'chat:message': (message: ChatMessage) => void; // single new message
   error: (message: string) => void;
 }
