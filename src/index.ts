@@ -1084,14 +1084,19 @@ io.on('connection', (socket) => {
     const room = roomManager.getRoom(roomId);
     if (!room) return;
     const player = room.players.find((p) => p.sessionToken === sessionToken);
-    if (!player || !player.holeCards || player.holeCards.length === 0) return;
+    if (!player) return;
     // Only allowed during showdown phase (hand result visible, new hand not started)
     if (room.gameState?.phase !== 'showdown') return;
-    // Broadcast the revealed cards to all players in the room
+
+    // holeCards are preserved until the next hand starts, so they're
+    // always available here during the showdown window.
+    const cards = player.holeCards;
+    if (!cards || cards.length === 0) return;
+
     io.to(roomId).emit('game:hand-revealed', {
       sessionToken: player.sessionToken,
       nick: player.nick,
-      cards: player.holeCards,
+      cards,
     });
     console.log(`[show-hand] ${player.nick} revealed cards in ${roomId}`);
   });

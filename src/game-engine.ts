@@ -827,7 +827,9 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
   room.gameState.pot = 0;
   room.gameState.sidePots = [];
 
-  for (const p of room.players) p.holeCards = undefined;
+  // Note: holeCards are intentionally NOT cleared here.
+  // They remain available so players can use "Show Hand" during the showdown window.
+  // holeCards are cleared at the start of the NEXT hand in startNewHand().
 
   return result;
 }
@@ -1082,9 +1084,7 @@ export function finishHand(room: Room): HandResult {
   room.gameState.pot = 0;
   room.gameState.sidePots = [];
 
-  for (const p of room.players) {
-    p.holeCards = undefined;
-  }
+  // Note: holeCards are intentionally NOT cleared here — see above.
 
   return result;
 }
