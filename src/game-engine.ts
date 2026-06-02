@@ -117,15 +117,14 @@ export function solvePineapple(
 
   // hand.cards contains exactly the 5 cards that form the best hand.
   // Split them back into hole vs board so the frontend highlights only those 5.
+  // Card is a string like "As", "Td", "2h".
+  // pokersolver returns cards with {value, suit} where value matches rank.
   const winningKeys = new Set(
     hand.cards.map((c: { value: string; suit: string }) => c.value + c.suit)
   );
-  const cardKey = (c: Card) => {
-    // Convert internal rank to pokersolver value (T→10 not needed — pokersolver uses 'T')
-    return c.rank + c.suit;
-  };
-  const holeUsed = holeCards.filter(c => winningKeys.has(cardKey(c)));
-  const boardUsed = boardCards.filter(c => winningKeys.has(cardKey(c)));
+  // Card string IS already "rank+suit" e.g. "As" — use directly as key.
+  const holeUsed = holeCards.filter(c => winningKeys.has(c));
+  const boardUsed = boardCards.filter(c => winningKeys.has(c));
 
   return { hand, holeUsed, boardUsed };
 }
