@@ -1076,6 +1076,26 @@ io.on('connection', (socket) => {
     callback?.({ ok: true });
   });
 
+  // Show hand — player reveals their hole cards after hand is over
+  socket.on('game:show-hand', () => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return;
+    const room = roomManager.getRoom(roomId);
+    if (!room) return;
+    const player = room.players.find((p) => p.sessionToken === sessionToken);
+    if (!player || !player.holeCards || player.holeCards.length === 0) return;
+    // Only allowed during showdown phase (hand result visible, new hand not started)
+    if (room.gameState?.phase !== 'showdown') return;
+    // Broadcast the revealed cards to all players in the room
+    io.to(roomId).emit('game:hand-revealed', {
+      sessionToken: player.sessionToken,
+      nick: player.nick,
+      cards: player.holeCards,
+    });
+    console.log(`[show-hand] ${player.nick} revealed cards in ${roomId}`);
+  });
+
   socket.on('disconnect', () => {
     console.log(`[Socket] Disconnected: ${socket.id}`);
     const sessionToken = socket.data.sessionToken;
