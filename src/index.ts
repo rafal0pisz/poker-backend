@@ -191,6 +191,12 @@ function tryStartNextHand(roomId: string): boolean {
   const room = roomManager.getRoom(roomId);
   if (!room) return false;
 
+  // Guard: don't start a new hand if one is already in progress (not in showdown/null)
+  if (room.gameState && room.gameState.phase !== 'showdown') {
+    console.log(`[tryStartNextHand] Skipped — hand already in progress (phase=${room.gameState.phase})`);
+    return false;
+  }
+
   const eligible = room.players.filter(
     (p) =>
       p.chips > 0 &&
@@ -547,16 +553,10 @@ io.on('connection', (socket) => {
         performAction(room, sessionToken, 'fold');
         // If their fold ends the hand, run progressGame to settle the pot
         if (isHandComplete(room)) {
-          const result2 = finishHand(room);
-          room.gameState.lastHandResult = result2;
-          broadcastRoomState(room);
-          io.to(roomId!).emit('game:hand-result', result2);
-          clearActionTimer(roomId!);
-          setTimeout(() => {
-            const r = roomManager.getRoom(roomId!);
-            if (r && applyPendingChips(r)) broadcastRoomState(r);
-            tryStartNextHand(roomId!);
-          }, 3000);
+          // Let progressGame handle finishHand via its normal path.
+          // Calling finishHand directly here would race with the existing
+          // progressGame timeout and potentially start two hands.
+          progressGame(roomId!);
         }
       }
     }
@@ -1109,7 +1109,11 @@ io.on('connection', (socket) => {
     const result = roomManager.disconnectPlayer(sessionToken);
     if (result) {
       broadcastRoomState(result.room);
-      if (result.room.gameState) {
+      // Only run progressGame if a hand is actively in progress (not showdown).
+      // During showdown the result is already computed — calling progressGame again
+      // would call finishHand a second time with an empty pot.
+      const phase = result.room.gameState?.phase;
+      if (phase && phase !== 'showdown') {
         progressGame(result.roomId);
       }
     }
