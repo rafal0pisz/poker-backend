@@ -69,7 +69,7 @@ export interface SidePot {
 }
 
 export interface HandResult {
-  winnings: { sessionToken: string; amount: number; handDescription?: string }[];
+  winnings: { sessionToken: string; amount: number; netAmount?: number; handDescription?: string }[];
   showdownCards: { sessionToken: string; cards: Card[]; handName: string }[];
   // The cards that formed the winning hand (5 cards). Used to highlight on the UI.
   winningCards: Card[];
