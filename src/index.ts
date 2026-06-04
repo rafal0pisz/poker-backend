@@ -105,6 +105,7 @@ function scheduleActionTimer(roomId: string) {
 
 // Draw submit timers — auto stand-pat when draw phase times out
 const drawSubmitTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const pineappleDiscardTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 function clearDrawSubmitTimer(roomId: string) {
   const t = drawSubmitTimers.get(roomId);

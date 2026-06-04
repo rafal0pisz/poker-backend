@@ -970,12 +970,12 @@ export function advancePhase(room: Room, deck: Card[]): void {
   let nextPhase: HandPhase;
 
   if (variant === 'pineapple-classic') {
+    const pineappleClassicOrder: HandPhase[] = ['preflop', 'flop', 'pineapple-discard', 'turn', 'river', 'showdown'];
     const currentIdx = pineappleClassicOrder.indexOf(room.gameState.phase);
     const nextPhase = pineappleClassicOrder[currentIdx + 1];
     if (!nextPhase) return;
 
     if (nextPhase === 'pineapple-discard') {
-      // Enter discard phase — initialize discard state
       collectBets(room);
       room.gameState.phase = 'pineapple-discard';
       room.gameState.currentPlayerSeat = null;
@@ -984,16 +984,13 @@ export function advancePhase(room: Room, deck: Card[]): void {
       return;
     }
 
-    // After discard, continue normally
     collectBets(room);
     room.gameState.phase = nextPhase;
     room.gameState.currentBet = 0;
     room.gameState.minRaise = room.settings.bigBlind;
     for (const p of room.players) p.hasActedThisRound = false;
-    if (nextPhase === 'turn') {
-      deck.push(...dealCommunityCards(room, 1));
-    } else if (nextPhase === 'river') {
-      deck.push(...dealCommunityCards(room, 1));
+    if (nextPhase === 'turn' || nextPhase === 'river') {
+      room.gameState.communityCards.push(deck.pop()!);
     }
     room.gameState.pineappleDiscardState = undefined;
     return;
@@ -1001,7 +998,6 @@ export function advancePhase(room: Room, deck: Card[]): void {
 
   if (variant === 'drawmaha') {
     const drawmahaOrder: HandPhase[] = ['preflop', 'flop', 'draw', 'turn', 'river', 'showdown'];
-  const pineappleClassicOrder: HandPhase[] = ['preflop', 'flop', 'pineapple-discard', 'turn', 'river', 'showdown'];
     const currentIdx = drawmahaOrder.indexOf(room.gameState.phase);
     nextPhase = drawmahaOrder[currentIdx + 1] ?? 'showdown';
   } else {
