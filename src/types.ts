@@ -7,7 +7,7 @@ export type PlayerRole = 'player' | 'vice-admin' | 'admin';
 // Texas:    2 hole cards + 5 community, best 5 of 7
 // Omaha:    4 hole cards + 5 community, must use EXACTLY 2 hole + 3 community
 // Drawmaha: 5 hole cards + draw phase after flop + 1-card reveal + split pot (Omaha half + Texas half)
-export type GameVariant = 'texas' | 'omaha' | 'drawmaha' | 'pineapple';
+export type GameVariant = 'texas' | 'omaha' | 'drawmaha' | 'pineapple' | 'pineapple-classic';
 
 export type PlayerStatus =
   | 'playing'
@@ -61,7 +61,7 @@ export interface RoomSettings {
   actionTimeoutSec: 15 | 30 | 60;
 }
 
-export type HandPhase = 'preflop' | 'flop' | 'draw' | 'turn' | 'river' | 'showdown';
+export type HandPhase = 'preflop' | 'flop' | 'draw' | 'pineapple-discard' | 'turn' | 'river' | 'showdown';
 
 export interface SidePot {
   amount: number;
@@ -109,6 +109,13 @@ export interface DrawState {
   drawSubmitDeadline: number | null;
 }
 
+export interface PineappleDiscardState {
+  // Map of sessionToken → whether player has discarded
+  playerStates: Record<string, { hasDiscarded: boolean; discardIndex: number | null }>;
+  // Deadline for all players to submit discard
+  discardDeadline: number | null;
+}
+
 export interface GameState {
   phase: HandPhase;
   // Game variant for this specific hand (determined when hand starts, based on dealer's preference)
@@ -126,6 +133,8 @@ export interface GameState {
   lastHandResult: HandResult | null;
   // Only present during Drawmaha draw/draw-reveal phases
   drawState?: DrawState;
+  // Only present during Pineapple Classic pineapple-discard phase
+  pineappleDiscardState?: PineappleDiscardState;
 }
 
 // ===== CHAT =====
@@ -166,6 +175,7 @@ export interface Room {
 
 export interface ClientToServerEvents {
   'game:show-hand': () => void;
+  'game:pineapple-discard': (payload: { discardIndex: number }, callback: (r: { ok: boolean; error?: string }) => void) => void;
   'room:create': (
     payload: { nick: string; settings: RoomSettings },
     callback: (response: CreateRoomResponse) => void,

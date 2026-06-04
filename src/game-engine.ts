@@ -171,7 +171,7 @@ export function startNewHand(room: Room): { deck: Card[] } {
 
   // Number of hole cards based on variant
   // Texas: 2, Omaha: 4, Drawmaha: 5
-  const cardsPerPlayer = variant === 'omaha' ? 4 : variant === 'drawmaha' ? 5 : variant === 'pineapple' ? 3 : 2;
+  const cardsPerPlayer = variant === 'omaha' ? 4 : variant === 'drawmaha' ? 5 : (variant === 'pineapple' || variant === 'pineapple-classic') ? 3 : 2;
 
   const deck = shuffledDeck();
   for (const player of activePlayers) {
@@ -475,6 +475,78 @@ export function performDrawDiscard(
     ps.hasDecided = true;
     return { ok: true, openCard: null };
   }
+}
+
+/**
+ * Initializes PineappleDiscardState when entering pineapple-discard phase.
+ */
+export function initPineappleDiscardState(room: Room): import('./types.js').PineappleDiscardState {
+  const active = room.players.filter(
+    (p) => p.status === 'playing' || p.status === 'all-in',
+  );
+  const playerStates: Record<string, { hasDiscarded: boolean; discardIndex: number | null }> = {};
+  for (const p of active) {
+    if (p.status === 'all-in') {
+      // All-in players auto-discard last card (index 2)
+      playerStates[p.sessionToken] = { hasDiscarded: true, discardIndex: 2 };
+      if (p.holeCards && p.holeCards.length === 3) {
+        p.holeCards.splice(2, 1);
+      }
+    } else {
+      playerStates[p.sessionToken] = { hasDiscarded: false, discardIndex: null };
+    }
+  }
+  return {
+    playerStates,
+    discardDeadline: Date.now() + room.settings.actionTimeoutSec * 1000,
+  };
+}
+
+/**
+ * Player submits which card to discard in Pineapple Classic (exactly 1 of 3).
+ */
+export function performPineappleDiscard(
+  room: Room,
+  sessionToken: string,
+  discardIndex: number,
+): { ok: true } | { ok: false; error: string } {
+  if (!room.gameState || room.gameState.phase !== 'pineapple-discard') {
+    return { ok: false, error: 'Not in pineapple discard phase' };
+  }
+  if (!room.gameState.pineappleDiscardState) {
+    return { ok: false, error: 'Discard state not initialized' };
+  }
+
+  const player = room.players.find((p) => p.sessionToken === sessionToken);
+  if (!player) return { ok: false, error: 'Player not found' };
+
+  const ps = room.gameState.pineappleDiscardState.playerStates[sessionToken];
+  if (!ps) return { ok: false, error: 'Player not in discard state' };
+  if (ps.hasDiscarded) return { ok: false, error: 'Already discarded' };
+
+  if (!player.holeCards || player.holeCards.length !== 3) {
+    return { ok: false, error: 'Player must have exactly 3 cards to discard' };
+  }
+  if (discardIndex < 0 || discardIndex > 2) {
+    return { ok: false, error: 'Discard index must be 0, 1, or 2' };
+  }
+
+  // Remove the discarded card
+  player.holeCards.splice(discardIndex, 1);
+  ps.discardIndex = discardIndex;
+  ps.hasDiscarded = true;
+
+  console.log(`[Pineapple] ${player.nick} discarded card at index ${discardIndex}, has ${player.holeCards.length} cards left`);
+  return { ok: true };
+}
+
+/**
+ * Check if all active players have submitted their pineapple discard.
+ */
+export function isPineappleDiscardComplete(room: Room): boolean {
+  if (!room.gameState?.pineappleDiscardState) return false;
+  const states = Object.values(room.gameState.pineappleDiscardState.playerStates);
+  return states.length > 0 && states.every((s) => s.hasDiscarded);
 }
 
 /**
@@ -897,8 +969,39 @@ export function advancePhase(room: Room, deck: Card[]): void {
   // Texas/Omaha:          preflop → flop → turn → river → showdown
   let nextPhase: HandPhase;
 
+  if (variant === 'pineapple-classic') {
+    const currentIdx = pineappleClassicOrder.indexOf(room.gameState.phase);
+    const nextPhase = pineappleClassicOrder[currentIdx + 1];
+    if (!nextPhase) return;
+
+    if (nextPhase === 'pineapple-discard') {
+      // Enter discard phase — initialize discard state
+      collectBets(room);
+      room.gameState.phase = 'pineapple-discard';
+      room.gameState.currentPlayerSeat = null;
+      room.gameState.actionDeadline = null;
+      room.gameState.pineappleDiscardState = initPineappleDiscardState(room);
+      return;
+    }
+
+    // After discard, continue normally
+    collectBets(room);
+    room.gameState.phase = nextPhase;
+    room.gameState.currentBet = 0;
+    room.gameState.minRaise = room.settings.bigBlind;
+    for (const p of room.players) p.hasActedThisRound = false;
+    if (nextPhase === 'turn') {
+      deck.push(...dealCommunityCards(room, 1));
+    } else if (nextPhase === 'river') {
+      deck.push(...dealCommunityCards(room, 1));
+    }
+    room.gameState.pineappleDiscardState = undefined;
+    return;
+  }
+
   if (variant === 'drawmaha') {
     const drawmahaOrder: HandPhase[] = ['preflop', 'flop', 'draw', 'turn', 'river', 'showdown'];
+  const pineappleClassicOrder: HandPhase[] = ['preflop', 'flop', 'pineapple-discard', 'turn', 'river', 'showdown'];
     const currentIdx = drawmahaOrder.indexOf(room.gameState.phase);
     nextPhase = drawmahaOrder[currentIdx + 1] ?? 'showdown';
   } else {
@@ -1018,7 +1121,7 @@ export function finishHand(room: Room): HandResult {
         return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };
       }
 
-      if (variant === 'pineapple') {
+      if (variant === 'pineapple' || variant === 'pineapple-classic') {
         // Must use exactly 1 or 2 hole cards — not 0 or 3
         const { hand, holeUsed, boardUsed } = solvePineapple(holeCards, board);
         return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };

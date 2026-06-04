@@ -15,6 +15,9 @@ import {
   performDrawDiscard,
   performDrawDecide,
   isDrawPhaseComplete,
+  performPineappleDiscard,
+  isPineappleDiscardComplete,
+  initPineappleDiscardState,
   isRevealPhaseComplete,
   getNextDecidingPlayer,
 } from './game-engine.js';
@@ -146,6 +149,49 @@ function scheduleDrawSubmitTimer(roomId: string) {
 
   drawSubmitTimers.set(roomId, timer);
 }
+
+function clearPineappleDiscardTimer(roomId: string) {
+  const t = pineappleDiscardTimers.get(roomId);
+  if (t) { clearTimeout(t); pineappleDiscardTimers.delete(roomId); }
+}
+
+function schedulePineappleDiscardTimer(roomId: string) {
+  clearPineappleDiscardTimer(roomId);
+  const room = roomManager.getRoom(roomId);
+  if (!room || !room.gameState?.pineappleDiscardState) return;
+
+  const deadline = room.gameState.pineappleDiscardState.discardDeadline;
+  if (!deadline) return;
+
+  const delay = Math.max(0, deadline - Date.now());
+
+  const timer = setTimeout(() => {
+    pineappleDiscardTimers.delete(roomId);
+    const r = roomManager.getRoom(roomId);
+    if (!r || r.gameState?.phase !== 'pineapple-discard' || !r.gameState?.pineappleDiscardState) return;
+
+    const ds = r.gameState.pineappleDiscardState;
+    const pending = r.players.filter(
+      (p) => ds.playerStates[p.sessionToken] && !ds.playerStates[p.sessionToken].hasDiscarded
+    );
+
+    for (const player of pending) {
+      console.log(`[pineapple-timeout] ${player.nick} auto-discards last card in ${roomId}`);
+      // Auto-discard last card (index 2)
+      const result = performPineappleDiscard(r, player.sessionToken, 2);
+      if (!result.ok) console.error(`[pineapple-timeout] Discard failed: ${result.error}`);
+      emitSystemMessage(roomId, `⏱ ${player.nick} timed out — last card discarded`);
+    }
+
+    if (pending.length > 0) {
+      broadcastRoomState(r);
+      progressGame(roomId);
+    }
+  }, delay + 500);
+
+  pineappleDiscardTimers.set(roomId, timer);
+}
+
 
 function applyPendingChips(room: Room) {
   let applied = false;
@@ -358,6 +404,18 @@ function progressGame(roomId: string) {
   const room = roomManager.getRoom(roomId);
   if (!room || !room.gameState) return;
 
+  // ===== PINEAPPLE CLASSIC: pineapple-discard phase handling =====
+  if (room.gameState.phase === 'pineapple-discard') {
+    if (isPineappleDiscardComplete(room)) {
+      const deck2 = roomManager.getDeck(roomId) || [];
+      advancePhase(room, deck2);
+      broadcastRoomState(room);
+      scheduleActionTimer(roomId);
+    }
+    // During discard phase we don't run normal betting logic
+    return;
+  }
+
   // ===== DRAWMAHA: draw phase handling =====
   if (room.gameState.phase === 'draw') {
     // Check if all players have submitted their draw
@@ -417,6 +475,10 @@ function progressGame(roomId: string) {
     const phaseAfterAdvance: string = room.gameState.phase;
     if (phaseAfterAdvance === 'draw') {
       scheduleDrawSubmitTimer(roomId); // auto stand-pat timer for draw phase
+      return;
+    }
+    if (phaseAfterAdvance === 'pineapple-discard') {
+      schedulePineappleDiscardTimer(roomId); // auto-discard last card if player times out
       return;
     }
 
@@ -1077,6 +1139,27 @@ io.on('connection', (socket) => {
   });
 
   // Show hand — player reveals their hole cards after hand is over
+  // Pineapple Classic — player discards 1 card after flop
+  socket.on('game:pineapple-discard', (payload: { discardIndex: number }, callback: (r: { ok: boolean; error?: string }) => void) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback?.({ ok: false, error: 'Not in a room' });
+
+    const room = roomManager.getRoom(roomId);
+    if (!room || room.gameState?.phase !== 'pineapple-discard') {
+      return callback?.({ ok: false, error: 'Not in pineapple discard phase' });
+    }
+
+    const result = performPineappleDiscard(room, sessionToken, payload.discardIndex ?? 0);
+    if (!result.ok) return callback?.({ ok: false, error: result.error });
+
+    broadcastRoomState(room);
+    callback?.({ ok: true });
+
+    // Check if all players have discarded
+    progressGame(roomId);
+  });
+
   socket.on('game:show-hand', () => {
     const sessionToken = socket.data.sessionToken;
     const roomId = socket.data.roomId;
