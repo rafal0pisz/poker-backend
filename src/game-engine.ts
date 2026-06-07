@@ -1139,10 +1139,6 @@ export function finishHand(room: Room): HandResult {
         return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };
       }
 
-      if (variant === 'omaha-pl') {
-        const { hand, holeUsed, boardUsed } = solveOmaha(holeCards, board);
-        return { hand, holeUsed, boardUsed };
-      }
       if (variant === 'pineapple' || variant === 'pineapple-classic') {
         // Must use exactly 1 or 2 hole cards — not 0 or 3
         const { hand, holeUsed, boardUsed } = solvePineapple(holeCards, board);
