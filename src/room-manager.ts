@@ -89,8 +89,34 @@ class RoomManager {
     }
 
     const occupiedSeats = new Set(room.players.map((p) => p.seat));
-    let seat = 0;
-    while (occupiedSeats.has(seat)) seat++;
+    const maxSeats = room.settings.maxSeats;
+    const dealerSeat = room.gameState?.dealerSeat ?? -1;
+
+    // Assign seat clockwise after dealer (or last player) so new players
+    // always join in natural table order rather than filling gaps from 0.
+    let seat = -1;
+    if (occupiedSeats.size === 0) {
+      seat = 0;
+    } else {
+      // Find the highest occupied seat, start searching after it (clockwise)
+      const sortedSeats = [...occupiedSeats].sort((a, b) => a - b);
+      const startAfter = dealerSeat >= 0
+        ? dealerSeat
+        : sortedSeats[sortedSeats.length - 1];
+      // Try seats clockwise from startAfter
+      for (let i = 1; i <= maxSeats; i++) {
+        const candidate = (startAfter + i) % maxSeats;
+        if (!occupiedSeats.has(candidate)) {
+          seat = candidate;
+          break;
+        }
+      }
+      // Fallback: first free seat (should never happen if maxSeats enforced)
+      if (seat === -1) {
+        seat = 0;
+        while (occupiedSeats.has(seat)) seat++;
+      }
+    }
 
     const newSessionToken = generateSessionToken();
 
