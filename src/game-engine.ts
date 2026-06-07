@@ -315,7 +315,10 @@ export function performAction(
       if ((plVariant === 'omaha-pl' || plVariant === 'drawmaha-pl') && !isAllIn) {
         const toCall = room.gameState.currentBet - player.currentBet;
         const totalPot = room.gameState.pot + room.gameState.sidePots.reduce((s, p) => s + p.amount, 0);
-        const maxBet = room.gameState.currentBet + totalPot + toCall;
+        const potFormula = room.gameState.currentBet + totalPot + toCall;
+        // In PLO, if pot < minRaise (e.g. preflop with small blinds),
+        // player is always allowed to raise at least minRaise
+        const maxBet = Math.max(potFormula, minRequired);
         if (amount > maxBet) {
           return { ok: false, error: `Pot Limit: max raise to ${maxBet}` };
         }
@@ -348,7 +351,9 @@ export function performAction(
       if (plVariantAI === 'omaha-pl' || plVariantAI === 'drawmaha-pl') {
         const toCallPL = room.gameState.currentBet - player.currentBet;
         const totalPotPL = room.gameState.pot + room.gameState.sidePots.reduce((s, p) => s + p.amount, 0);
-        const potLimitMaxBet = room.gameState.currentBet + totalPotPL + toCallPL;
+        const potFormulaAI = room.gameState.currentBet + totalPotPL + toCallPL;
+        const minReqAI = room.gameState.currentBet + room.gameState.minRaise;
+        const potLimitMaxBet = Math.max(potFormulaAI, minReqAI);
         if (allInAmount > potLimitMaxBet) {
           return { ok: false, error: `Pot Limit: max raise to ${potLimitMaxBet}` };
         }
