@@ -171,7 +171,7 @@ export function startNewHand(room: Room): { deck: Card[] } {
 
   // Number of hole cards based on variant
   // Texas: 2, Omaha: 4, Drawmaha: 5
-  const cardsPerPlayer = variant === 'omaha' ? 4 : variant === 'drawmaha' ? 5 : (variant === 'pineapple' || variant === 'pineapple-classic') ? 3 : 2;
+  const cardsPerPlayer = (variant === 'omaha' || variant === 'omaha-pl') ? 4 : (variant === 'drawmaha' || variant === 'drawmaha-pl') ? 5 : (variant === 'pineapple' || variant === 'pineapple-classic') ? 3 : 2;
 
   const deck = shuffledDeck();
   for (const player of activePlayers) {
@@ -226,6 +226,17 @@ export function startNewHand(room: Room): { deck: Card[] } {
   };
 
   return { deck };
+}
+
+/**
+ * Calculate max raise for Pot Limit games.
+ * Formula: pot + 2 × call (= pot after call + pot size)
+ */
+function calcPotLimitMaxRaise(room: Room, toCall: number): number {
+  const pot = room.gameState?.pot ?? 0;
+  const sidePotTotal = room.gameState?.sidePots.reduce((s, p) => s + p.amount, 0) ?? 0;
+  const currentPot = pot > 0 ? pot : sidePotTotal;
+  return currentPot + 2 * toCall;
 }
 
 export function performAction(
@@ -298,6 +309,16 @@ export function performAction(
       const isAllIn = additionalChips === player.chips;
       if (amount < minRequired && !isAllIn) {
         return { ok: false, error: `Minimum raise is ${minRequired}` };
+      }
+      // Pot Limit: cap raise at pot size (omaha-pl, drawmaha-pl)
+      const isPotLimit = variant === 'omaha-pl' || variant === 'drawmaha-pl';
+      if (isPotLimit && !isAllIn) {
+        const toCall = room.gameState.currentBet - player.currentBet;
+        const potSize = room.gameState.sidePots.reduce((s, p) => s + p.amount, 0) || room.gameState.pot;
+        const maxBet = room.gameState.currentBet + potSize + toCall;
+        if (amount > maxBet) {
+          return { ok: false, error: `Pot Limit: max raise to ${maxBet}` };
+        }
       }
       const raiseSize = amount - room.gameState.currentBet;
       player.chips -= additionalChips;
@@ -996,7 +1017,7 @@ export function advancePhase(room: Room, deck: Card[]): void {
     return;
   }
 
-  if (variant === 'drawmaha') {
+  if (variant === 'drawmaha' || variant === 'drawmaha-pl') {
     const drawmahaOrder: HandPhase[] = ['preflop', 'flop', 'draw', 'turn', 'river', 'showdown'];
     const currentIdx = drawmahaOrder.indexOf(room.gameState.phase);
     nextPhase = drawmahaOrder[currentIdx + 1] ?? 'showdown';
@@ -1112,11 +1133,15 @@ export function finishHand(room: Room): HandResult {
       const holeCards = player.holeCards || [];
       const board = room.gameState!.communityCards;
 
-      if (variant === 'omaha') {
+      if (variant === 'omaha' || variant === 'omaha-pl') {
         const { hand, holeUsed, boardUsed } = solveOmaha(holeCards, board);
         return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };
       }
 
+      if (variant === 'omaha-pl') {
+        const { hand, holeUsed, boardUsed } = solveOmaha(holeCards, board);
+        return { hand, holeUsed, boardUsed };
+      }
       if (variant === 'pineapple' || variant === 'pineapple-classic') {
         // Must use exactly 1 or 2 hole cards — not 0 or 3
         const { hand, holeUsed, boardUsed } = solvePineapple(holeCards, board);
