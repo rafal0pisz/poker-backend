@@ -343,6 +343,17 @@ export function performAction(
       if (totalChipsIn === 0) {
         return { ok: false, error: 'No chips left' };
       }
+      // Pot Limit: all-in is only allowed if player's chips <= pot limit max.
+      // If player has more chips than pot limit, they must use raise action instead.
+      const isPotLimitVariant = variant === 'omaha-pl' || variant === 'drawmaha-pl';
+      if (isPotLimitVariant) {
+        const toCallPL = room.gameState.currentBet - player.currentBet;
+        const potSizePL = room.gameState.sidePots.reduce((s, p) => s + p.amount, 0) || room.gameState.pot;
+        const potLimitMaxBet = room.gameState.currentBet + potSizePL + toCallPL;
+        if (allInAmount > potLimitMaxBet) {
+          return { ok: false, error: `Pot Limit: max raise to ${potLimitMaxBet}. Use raise action instead of all-in.` };
+        }
+      }
       player.chips = 0;
       player.currentBet = allInAmount;
       player.totalBetInHand += totalChipsIn;
