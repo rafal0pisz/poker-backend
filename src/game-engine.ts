@@ -310,10 +310,9 @@ export function performAction(
       if (amount < minRequired && !isAllIn) {
         return { ok: false, error: `Minimum raise is ${minRequired}` };
       }
-      // Pot Limit: cap raise at pot size (omaha-pl, drawmaha-pl)
-      const currentVariant = room.gameState.variant;
-      const isPotLimit = currentVariant === 'omaha-pl' || currentVariant === 'drawmaha-pl';
-      if (isPotLimit && !isAllIn) {
+      // Pot Limit raise cap
+      const plVariant = room.gameState.variant;
+      if ((plVariant === 'omaha-pl' || plVariant === 'drawmaha-pl') && !isAllIn) {
         const toCall = room.gameState.currentBet - player.currentBet;
         const potSize = room.gameState.sidePots.reduce((s, p) => s + p.amount, 0) || room.gameState.pot;
         const maxBet = room.gameState.currentBet + potSize + toCall;
@@ -321,6 +320,7 @@ export function performAction(
           return { ok: false, error: `Pot Limit: max raise to ${maxBet}` };
         }
       }
+
       const raiseSize = amount - room.gameState.currentBet;
       player.chips -= additionalChips;
       player.currentBet = amount;
@@ -1073,7 +1073,7 @@ export function finishHand(room: Room): HandResult {
   }
 
   // Drawmaha uses its own split-pot finisher
-  if (room.gameState.variant === 'drawmaha') {
+  if (room.gameState.variant === 'drawmaha' || room.gameState.variant === 'drawmaha-pl') {
     return finalizeDrawmahaHand(room);
   }
 
@@ -1139,7 +1139,10 @@ export function finishHand(room: Room): HandResult {
         return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };
       }
 
-
+      if (variant === 'omaha-pl') {
+        const { hand, holeUsed, boardUsed } = solveOmaha(holeCards, board);
+        return { hand, holeUsed, boardUsed };
+      }
       if (variant === 'pineapple' || variant === 'pineapple-classic') {
         // Must use exactly 1 or 2 hole cards — not 0 or 3
         const { hand, holeUsed, boardUsed } = solvePineapple(holeCards, board);
