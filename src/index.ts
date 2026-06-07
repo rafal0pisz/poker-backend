@@ -883,7 +883,7 @@ io.on('connection', (socket) => {
     const player = room.players.find((p) => p.sessionToken === sessionToken);
     if (!player) return callback?.({ ok: false, error: 'Player not found' });
 
-    const allowed: GameVariant[] = ['texas', 'omaha', 'drawmaha', 'pineapple'];
+    const allowed: GameVariant[] = ['texas', 'omaha', 'drawmaha', 'pineapple', 'pineapple-classic'];
     if (!allowed.includes(payload.variant)) {
       return callback?.({ ok: false, error: 'Unknown variant' });
     }
