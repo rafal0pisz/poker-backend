@@ -771,19 +771,14 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
   for (const p of remaining) {
     try {
       const { hand, holeUsed, boardUsed } = solveOmaha(p.holeCards ?? [], board);
-      console.log(`[Drawmaha eval] ${p.nick} Omaha hand: ${hand.descr} (hole: ${holeUsed.join(',')}, board: ${boardUsed.join(',')})`);
       omahaEvalMap.set(p.sessionToken, { hand, holeUsed, boardUsed });
     } catch (err) {
       console.error(`[Drawmaha] Omaha eval failed for ${p.nick}:`, err);
       throw err;
     }
     const drawCards = p.holeCards ?? [];
-    if (drawCards.length < 3) {
-      console.error(`[Drawmaha] ${p.nick} has only ${drawCards.length} draw cards — unexpected`);
-    }
     // Draw portion: evaluate hole cards as a 5-card draw hand (no board used)
     const hand = Hand.solve(drawCards);
-    console.log(`[Drawmaha eval] ${p.nick} Draw hand: ${hand.descr} (cards: ${drawCards.join(',')})`);
     texasEvalMap.set(p.sessionToken, { hand });
   }
 

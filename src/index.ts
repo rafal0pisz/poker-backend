@@ -66,7 +66,7 @@ function scheduleActionTimer(roomId: string) {
   if (!room || !room.gameState) return;
 
   const { currentPlayerSeat, actionDeadline, currentBet, phase } = room.gameState;
-  if (!currentPlayerSeat || !actionDeadline || phase === 'showdown') return;
+  if (!currentPlayerSeat || !actionDeadline || phase === 'showdown' || phase === 'pineapple-discard' || phase === 'draw') return;
 
   const delay = Math.max(0, actionDeadline - Date.now());
 
@@ -648,6 +648,13 @@ io.on('connection', (socket) => {
           progressGame(roomId!);
         }
       }
+    }
+
+    // Clear any pending disconnect grace timer — player is leaving voluntarily
+    const graceTimer = disconnectGraceTimers.get(sessionToken);
+    if (graceTimer) {
+      clearTimeout(graceTimer);
+      disconnectGraceTimers.delete(sessionToken);
     }
 
     const result = roomManager.removePlayer(sessionToken);
