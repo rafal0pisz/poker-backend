@@ -107,6 +107,85 @@ function scheduleActionTimer(roomId: string) {
 const drawSubmitTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const pineappleDiscardTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+// ── Player stats update ──────────────────────────────────────────────────
+function updatePlayerStats(room: Room, result: import('./types.js').HandResult): void {
+  if (!room.gameState) return;
+  const activePlayers = room.players.filter(
+    (p) => p.status !== 'spectator'
+  );
+
+  // Track each active player
+  for (const player of activePlayers) {
+    const token = player.sessionToken;
+    if (!room.playerStats[token]) {
+      room.playerStats[token] = {
+        sessionToken: token,
+        nick: player.nick,
+        handsPlayed: 0,
+        handsWon: 0,
+        vpip: 0,
+        vpipHands: 0,
+        biggestPot: 0,
+        biggestPotHand: '',
+        totalWon: 0,
+        bestHand: '',
+        allInCount: 0,
+        foldCount: 0,
+      };
+    }
+    const stats = room.playerStats[token];
+    stats.nick = player.nick; // keep nick updated
+
+    // Count hand
+    if (player.status === 'playing' || player.status === 'all-in' ||
+        player.status === 'folded' || player.totalBetInHand > 0) {
+      stats.handsPlayed++;
+    }
+
+    // VPIP: player voluntarily put chips in preflop (not just BB check)
+    if (player.totalBetInHand > 0 && player.status !== 'no-chips') {
+      stats.vpipHands++;
+    }
+    if (stats.handsPlayed > 0) {
+      stats.vpip = Math.round((stats.vpipHands / stats.handsPlayed) * 100);
+    }
+
+    // Status tracking
+    if (player.status === 'folded') stats.foldCount++;
+    if (player.status === 'all-in') stats.allInCount++;
+  }
+
+  // Winnings
+  for (const w of result.winnings) {
+    const stats = room.playerStats[w.sessionToken];
+    if (!stats) continue;
+    stats.handsWon++;
+    const net = w.netAmount ?? w.amount;
+    stats.totalWon += net;
+    if (w.amount > stats.biggestPot) {
+      stats.biggestPot = w.amount;
+      stats.biggestPotHand = w.handDescription ?? '';
+    }
+  }
+
+  // Best hand from showdown
+  for (const sc of result.showdownCards) {
+    const stats = room.playerStats[sc.sessionToken];
+    if (!stats) continue;
+    // Simple hand rank ordering
+    const HAND_RANK: Record<string, number> = {
+      'Royal Flush': 9, 'Straight Flush': 8, 'Four of a Kind': 7,
+      'Full House': 6, 'Flush': 5, 'Straight': 4,
+      'Three of a Kind': 3, 'Two Pair': 2, 'Pair': 1, 'High Card': 0,
+    };
+    const currentRank = HAND_RANK[stats.bestHand?.split(',')[0]] ?? -1;
+    const newRank = HAND_RANK[sc.handName?.split(',')[0]] ?? -1;
+    if (newRank > currentRank) {
+      stats.bestHand = sc.handName ?? '';
+    }
+  }
+}
+
 // Grace period before folding a disconnected player
 // Mobile connections often drop briefly (iOS background, network switch)
 const DISCONNECT_GRACE_MS = 30_000; // 30 seconds
@@ -436,6 +515,7 @@ function progressGame(roomId: string) {
   if (isHandComplete(room) && room.gameState.phase !== 'showdown') {
     const result = finishHand(room);
     room.gameState.lastHandResult = result;
+    updatePlayerStats(room, result);
     broadcastRoomState(room);
     io.to(roomId).emit('game:hand-result', result);
 
@@ -456,6 +536,7 @@ function progressGame(roomId: string) {
       advancePhase(room, roomManager.getDeck(roomId) || []);
       const result = finishHand(room);
       room.gameState.lastHandResult = result;
+      updatePlayerStats(room, result);
       broadcastRoomState(room);
       io.to(roomId).emit('game:hand-result', result);
 

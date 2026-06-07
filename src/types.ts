@@ -150,6 +150,21 @@ export interface ChatMessage {
   timestamp: number;
 }
 
+export interface PlayerStats {
+  sessionToken: string;
+  nick: string;
+  handsPlayed: number;       // total hands dealt to player
+  handsWon: number;          // hands where player won chips
+  vpip: number;              // voluntary put in pot (preflop call/raise, %)
+  vpipHands: number;         // hands where player voluntarily entered pot
+  biggestPot: number;        // largest pot won
+  biggestPotHand: string;    // hand description of biggest pot win
+  totalWon: number;          // cumulative net chips won (sum of netAmounts)
+  bestHand: string;          // best hand description seen
+  allInCount: number;        // times went all-in
+  foldCount: number;         // times folded
+}
+
 export interface SessionResult {
   sessionToken: string;
   nick: string;
@@ -169,6 +184,7 @@ export interface Room {
   paused: boolean; // admin can pause the game // chat history (kept while room exists)
   // Persistent session summary — includes players who left
   sessionSummary: SessionResult[];
+  playerStats: Record<string, PlayerStats>;  // keyed by sessionToken
 }
 
 // ===== CLIENT → SERVER EVENTS =====

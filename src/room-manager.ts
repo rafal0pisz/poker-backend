@@ -49,6 +49,7 @@ class RoomManager {
       gameState: null,
       messages: [],
       sessionSummary: [],
+      playerStats: {},
       paused: false,
     };
 
@@ -336,13 +337,8 @@ class RoomManager {
     }
 
     // Build a map of showdown cards (for re-injection)
-    // IMPORTANT: only show showdown cards during the 'showdown' phase itself.
-    // lastHandResult persists into the next hand — if we show cards outside
-    // showdown phase, a reconnecting player would see previous hand cards
-    // overlaid on the current hand.
     const showdownCardsMap = new Map<string, typeof room.players[number]['holeCards']>();
-    const isShowdownPhase = room.gameState?.phase === 'showdown';
-    if (isShowdownPhase && room.gameState?.lastHandResult) {
+    if (room.gameState?.lastHandResult) {
       for (const sc of room.gameState.lastHandResult.showdownCards) {
         showdownCardsMap.set(sc.sessionToken, sc.cards);
       }
@@ -362,10 +358,10 @@ class RoomManager {
         const shouldReveal = isAllInRevealed || !!showdownCards;
 
         if (shouldReveal) {
-          // For all-in reveal: use current holeCards (they're in the hand)
-          // For showdown reveal: use showdownCards (safe historical data),
-          // NOT p.holeCards which could be cards from the NEXT hand already dealt.
-          const cardsToShow = isAllInRevealed ? p.holeCards : showdownCards;
+          // If holeCards are still in memory (before finishHand) use them.
+          // After finishHand they are cleared to undefined — fall back to showdownCards.
+          // This is critical so that cards remain visible during the post-showdown delay.
+          const cardsToShow = p.holeCards || showdownCards;
           return { ...p, holeCards: cardsToShow };
         }
 
