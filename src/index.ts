@@ -107,6 +107,11 @@ function scheduleActionTimer(roomId: string) {
 const drawSubmitTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const pineappleDiscardTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+// Grace period before folding a disconnected player
+// Mobile connections often drop briefly (iOS background, network switch)
+const DISCONNECT_GRACE_MS = 30_000; // 30 seconds
+const disconnectGraceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
 function clearDrawSubmitTimer(roomId: string) {
   const t = drawSubmitTimers.get(roomId);
   if (t) { clearTimeout(t); drawSubmitTimers.delete(roomId); }
@@ -582,6 +587,27 @@ io.on('connection', (socket) => {
 
       const isReconnect = payload.sessionToken === result.sessionToken;
       console.log(`[room:join] ${payload.nick} ${isReconnect ? 'reconnected' : 'joined'} ${result.room.id}`);
+
+      // Cancel any pending grace-period fold timer for this player
+      if (isReconnect && result.sessionToken) {
+        const graceTimer = disconnectGraceTimers.get(result.sessionToken);
+        if (graceTimer) {
+          clearTimeout(graceTimer);
+          disconnectGraceTimers.delete(result.sessionToken);
+          console.log(`[reconnect] ${payload.nick} reconnected within grace period — fold cancelled`);
+        }
+        // Restore status if they were folded prematurely (shouldn't happen with grace period,
+        // but as a safety net: if player reconnects and was playing before disconnect)
+        const player = result.room.players.find((p) => p.sessionToken === result.sessionToken);
+        if (player) {
+          player.connected = true;
+          // If they reconnect during an active hand and their turn hasn't come yet, restore
+          if (result.room.gameState?.phase && player.status === 'disconnected') {
+            player.status = 'waiting';
+          }
+        }
+      }
+
       callback({ ok: true, room: result.room, sessionToken: result.sessionToken });
       broadcastRoomState(result.room);
 
@@ -1190,17 +1216,45 @@ io.on('connection', (socket) => {
     const sessionToken = socket.data.sessionToken;
     if (!sessionToken) return;
     sessionToSocket.delete(sessionToken);
+
     const result = roomManager.disconnectPlayer(sessionToken);
-    if (result) {
-      broadcastRoomState(result.room);
-      // Only run progressGame if a hand is actively in progress (not showdown).
-      // During showdown the result is already computed — calling progressGame again
-      // would call finishHand a second time with an empty pot.
-      const phase = result.room.gameState?.phase;
-      if (phase && phase !== 'showdown') {
-        progressGame(result.roomId);
+    if (!result) return;
+
+    broadcastRoomState(result.room);
+
+    // Start grace period — give mobile players time to reconnect
+    // before folding them out of the hand
+    const existingTimer = disconnectGraceTimers.get(sessionToken);
+    if (existingTimer) clearTimeout(existingTimer);
+
+    const graceTimer = setTimeout(() => {
+      disconnectGraceTimers.delete(sessionToken);
+      const room = roomManager.getRoom(result.roomId);
+      if (!room) return;
+
+      const player = room.players.find((p) => p.sessionToken === sessionToken);
+      if (!player || player.connected) return; // reconnected during grace period
+
+      console.log(`[disconnect-grace] ${player.nick} did not reconnect in ${DISCONNECT_GRACE_MS}ms — folding`);
+
+      // Now actually fold the player if they were active
+      if (room.gameState && player.status === 'playing') {
+        player.status = 'folded';
+        broadcastRoomState(room);
+        const phase = room.gameState.phase;
+        if (phase && phase !== 'showdown') {
+          progressGame(result.roomId);
+        }
+      } else if (room.gameState && player.status === 'all-in') {
+        // All-in players don't need to act — leave them in
+      } else if (!room.gameState) {
+        // No game running — just mark as disconnected
+        player.status = 'disconnected';
+        broadcastRoomState(room);
       }
-    }
+    }, DISCONNECT_GRACE_MS);
+
+    disconnectGraceTimers.set(sessionToken, graceTimer);
   });
 });
 
