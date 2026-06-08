@@ -464,11 +464,15 @@ function advanceRevealPhase(roomId: string) {
         }
 
         // Reveal all active players' hole cards
-        const revealPayload = room.players
-          .filter((p) => (p.status === 'all-in' || p.status === 'playing') && p.holeCards)
-          .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, cards: p.holeCards! }));
-        if (revealPayload.length >= 2) {
-          io.to(roomId).emit('game:all-in-reveal', revealPayload);
+        // Exception: Drawmaha never reveals mid-hand (split pot + draw phase confusion)
+        const isDrawmaha = room.gameState.variant === 'drawmaha' || room.gameState.variant === 'drawmaha-pl';
+        if (!isDrawmaha) {
+          const revealPayload = room.players
+            .filter((p) => (p.status === 'all-in' || p.status === 'playing') && p.holeCards)
+            .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, cards: p.holeCards! }));
+          if (revealPayload.length >= 2) {
+            io.to(roomId).emit('game:all-in-reveal', revealPayload);
+          }
         }
         broadcastRoomState(room);
       }
@@ -624,11 +628,15 @@ function progressGame(roomId: string) {
         }
 
         // Reveal all active players' hole cards
-        const revealPayload = room.players
-          .filter((p) => (p.status === 'all-in' || p.status === 'playing') && p.holeCards)
-          .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, cards: p.holeCards! }));
-        if (revealPayload.length >= 2) {
-          io.to(roomId).emit('game:all-in-reveal', revealPayload);
+        // Exception: Drawmaha never reveals mid-hand (split pot + draw phase confusion)
+        const isDrawmaha = room.gameState.variant === 'drawmaha' || room.gameState.variant === 'drawmaha-pl';
+        if (!isDrawmaha) {
+          const revealPayload = room.players
+            .filter((p) => (p.status === 'all-in' || p.status === 'playing') && p.holeCards)
+            .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, cards: p.holeCards! }));
+          if (revealPayload.length >= 2) {
+            io.to(roomId).emit('game:all-in-reveal', revealPayload);
+          }
         }
         broadcastRoomState(room);
       }

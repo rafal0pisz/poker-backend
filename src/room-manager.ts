@@ -320,11 +320,11 @@ class RoomManager {
       // Knowing opponents' cards before exchanging would give an unfair advantage.
       // Cards are hidden during preflop, flop, and the draw phase itself.
       // They can be revealed normally from the turn onwards.
+      // Drawmaha: NEVER reveal cards before showdown — split pot makes mid-hand
+      // reveals confusing and the draw phase would expose cards unfairly.
       const isDrawmahaPreDraw =
-        room.gameState.variant === 'drawmaha' &&
-        (room.gameState.phase === 'preflop' ||
-          room.gameState.phase === 'flop' ||
-          room.gameState.phase === 'draw');
+        (room.gameState.variant === 'drawmaha' || room.gameState.variant === 'drawmaha-pl') &&
+        room.gameState.phase !== 'showdown';
 
       if (anyAllIn && playersWhoCanStillAct.length === 0 && !isDrawmahaPreDraw) {
         // Reveal cards of every player still in the hand
