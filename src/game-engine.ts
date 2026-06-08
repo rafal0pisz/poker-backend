@@ -109,24 +109,41 @@ export function solvePineapple(
   boardCards: Card[],
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): { hand: any; holeUsed: Card[]; boardUsed: Card[] } {
-  // Crazy Pineapple uses Texas Hold'em rules — free choice of any cards.
-  // Best 5-card hand from any combination of hole cards (0-3) + board cards.
-  // No restriction on how many hole cards must be used (unlike Omaha).
-  const allCards = [...holeCards, ...boardCards];
-  const hand = Hand.solve(allCards);
+  // Crazy Pineapple: best 5-card hand using AT MOST 2 hole cards.
+  // Same rule as Texas Hold'em — you cannot use all 3 hole cards.
+  // Enumerate all combinations: 0, 1, or 2 from hole + enough from board.
 
-  // hand.cards contains exactly the 5 cards that form the best hand.
-  // Split them back into hole vs board so the frontend highlights only those 5.
-  // Card is a string like "As", "Td", "2h".
-  // pokersolver returns cards with {value, suit} where value matches rank.
-  const winningKeys = new Set(
-    hand.cards.map((c: { value: string; suit: string }) => c.value + c.suit)
-  );
-  // Card string IS already "rank+suit" e.g. "As" — use directly as key.
-  const holeUsed = holeCards.filter(c => winningKeys.has(c));
-  const boardUsed = boardCards.filter(c => winningKeys.has(c));
+  function combinations<T>(arr: T[], k: number): T[][] {
+    if (k === 0) return [[]];
+    if (arr.length === 0) return [];
+    const [first, ...rest] = arr;
+    return [
+      ...combinations(rest, k - 1).map(c => [first, ...c]),
+      ...combinations(rest, k),
+    ];
+  }
 
-  return { hand, holeUsed, boardUsed };
+  let bestHand: any = null;
+  let bestHoleUsed: Card[] = [];
+  let bestBoardUsed: Card[] = [];
+
+  // Try 0, 1, 2 hole cards (max 2)
+  for (let holeCount = 0; holeCount <= Math.min(2, holeCards.length); holeCount++) {
+    const boardCount = 5 - holeCount;
+    if (boardCount > boardCards.length) continue;
+    for (const hc of combinations(holeCards, holeCount)) {
+      for (const bc of combinations(boardCards, boardCount)) {
+        const hand = Hand.solve([...hc, ...bc]);
+        if (!bestHand || Hand.winners([bestHand, hand])[0] === hand && Hand.winners([bestHand, hand]).length === 1) {
+          bestHand = hand;
+          bestHoleUsed = hc as Card[];
+          bestBoardUsed = bc as Card[];
+        }
+      }
+    }
+  }
+
+  return { hand: bestHand, holeUsed: bestHoleUsed, boardUsed: bestBoardUsed };
 }
 
 /**
