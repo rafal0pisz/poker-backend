@@ -288,6 +288,7 @@ export interface ServerToClientEvents {
   // Drawmaha: sent to each player individually when open card is assigned
   'game:draw-open-card': (payload: { sessionToken: string; card: Card }) => void;
   'game:hand-revealed': (payload: { sessionToken: string; nick: string; cards: Card[] }) => void;
+  'game:all-in-reveal': (players: { sessionToken: string; nick: string; cards: Card[] }[]) => void;
   'chat:message': (message: ChatMessage) => void; // single new message
   error: (message: string) => void;
 }
