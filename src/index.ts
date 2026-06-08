@@ -443,26 +443,37 @@ function advanceRevealPhase(roomId: string) {
       (p) => p.status === 'playing' && !p.hasActedThisRound,
     );
     if (stillCanAct.length <= 1 && room.gameState.phase !== 'showdown') {
-      const allInRunout =
-        room.players.filter((p) => p.status === 'playing').length === 0 &&
-        room.players.filter((p) => p.status === 'all-in').length >= 2;
+      const playingCount = room.players.filter((p) => p.status === 'playing').length;
+      const allInCount = room.players.filter((p) => p.status === 'all-in').length;
 
-      if (allInRunout) {
-        // Nobody can act — clear currentPlayerSeat so no action buttons show
+      // Full runout: everyone is all-in
+      const fullAllInRunout = playingCount === 0 && allInCount >= 2;
+      // Caller runout: one player called but didn't go all-in, opponents are all-in
+      // That player has no one to bet against — auto-check and reveal cards
+      const lastManRunout = playingCount === 1 && allInCount >= 1;
+      const isRunout = fullAllInRunout || lastManRunout;
+
+      if (isRunout) {
         room.gameState.currentPlayerSeat = null;
         room.gameState.actionDeadline = null;
 
-        // Reveal all players' hole cards immediately
+        // Auto-check the last 'playing' player so betting round completes cleanly
+        if (lastManRunout) {
+          const lastPlayer = room.players.find((p) => p.status === 'playing');
+          if (lastPlayer) lastPlayer.hasActedThisRound = true;
+        }
+
+        // Reveal all active players' hole cards
         const revealPayload = room.players
-          .filter((p) => p.status === 'all-in' && p.holeCards)
+          .filter((p) => (p.status === 'all-in' || p.status === 'playing') && p.holeCards)
           .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, cards: p.holeCards! }));
         if (revealPayload.length >= 2) {
           io.to(roomId).emit('game:all-in-reveal', revealPayload);
         }
-        broadcastRoomState(room); // re-broadcast with null currentPlayerSeat
+        broadcastRoomState(room);
       }
 
-      const delay = allInRunout ? 3500 : 1500;
+      const delay = isRunout ? 3500 : 1500;
       setTimeout(() => progressGame(roomId), delay);
     }
     return;
@@ -592,26 +603,37 @@ function progressGame(roomId: string) {
       // All-in runout: detect if ALL remaining players are all-in (no one can act).
       // Use a dramatic delay so players can see each street reveal.
       // Normal all-in situations (1 player can still act) get standard delay.
-      const allInRunout =
-        room.players.filter((p) => p.status === 'playing').length === 0 &&
-        room.players.filter((p) => p.status === 'all-in').length >= 2;
+      const playingCount = room.players.filter((p) => p.status === 'playing').length;
+      const allInCount = room.players.filter((p) => p.status === 'all-in').length;
 
-      if (allInRunout) {
-        // Nobody can act — clear currentPlayerSeat so no action buttons show
+      // Full runout: everyone is all-in
+      const fullAllInRunout = playingCount === 0 && allInCount >= 2;
+      // Caller runout: one player called but didn't go all-in, opponents are all-in
+      // That player has no one to bet against — auto-check and reveal cards
+      const lastManRunout = playingCount === 1 && allInCount >= 1;
+      const isRunout = fullAllInRunout || lastManRunout;
+
+      if (isRunout) {
         room.gameState.currentPlayerSeat = null;
         room.gameState.actionDeadline = null;
 
-        // Reveal all players' hole cards immediately
+        // Auto-check the last 'playing' player so betting round completes cleanly
+        if (lastManRunout) {
+          const lastPlayer = room.players.find((p) => p.status === 'playing');
+          if (lastPlayer) lastPlayer.hasActedThisRound = true;
+        }
+
+        // Reveal all active players' hole cards
         const revealPayload = room.players
-          .filter((p) => p.status === 'all-in' && p.holeCards)
+          .filter((p) => (p.status === 'all-in' || p.status === 'playing') && p.holeCards)
           .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, cards: p.holeCards! }));
         if (revealPayload.length >= 2) {
           io.to(roomId).emit('game:all-in-reveal', revealPayload);
         }
-        broadcastRoomState(room); // re-broadcast with null currentPlayerSeat
+        broadcastRoomState(room);
       }
 
-      const delay = allInRunout ? 3500 : 1500;
+      const delay = isRunout ? 3500 : 1500;
       setTimeout(() => progressGame(roomId), delay);
     }
     return;
