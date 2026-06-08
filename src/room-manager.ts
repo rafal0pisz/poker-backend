@@ -326,7 +326,7 @@ class RoomManager {
           room.gameState.phase === 'flop' ||
           room.gameState.phase === 'draw');
 
-      if (anyAllIn && playersWhoCanStillAct.length <= 1 && !isDrawmahaPreDraw) {
+      if (anyAllIn && playersWhoCanStillAct.length === 0 && !isDrawmahaPreDraw) {
         // Reveal cards of every player still in the hand
         for (const p of stillInHand) {
           revealedTokens.add(p.sessionToken);
