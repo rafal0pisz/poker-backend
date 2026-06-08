@@ -446,6 +446,22 @@ function advanceRevealPhase(roomId: string) {
       const allInRunout =
         room.players.filter((p) => p.status === 'playing').length === 0 &&
         room.players.filter((p) => p.status === 'all-in').length >= 2;
+
+      if (allInRunout) {
+        // Nobody can act — clear currentPlayerSeat so no action buttons show
+        room.gameState.currentPlayerSeat = null;
+        room.gameState.actionDeadline = null;
+
+        // Reveal all players' hole cards immediately
+        const revealPayload = room.players
+          .filter((p) => p.status === 'all-in' && p.holeCards)
+          .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, cards: p.holeCards! }));
+        if (revealPayload.length >= 2) {
+          io.to(roomId).emit('game:all-in-reveal', revealPayload);
+        }
+        broadcastRoomState(room); // re-broadcast with null currentPlayerSeat
+      }
+
       const delay = allInRunout ? 3500 : 1500;
       setTimeout(() => progressGame(roomId), delay);
     }
@@ -579,6 +595,22 @@ function progressGame(roomId: string) {
       const allInRunout =
         room.players.filter((p) => p.status === 'playing').length === 0 &&
         room.players.filter((p) => p.status === 'all-in').length >= 2;
+
+      if (allInRunout) {
+        // Nobody can act — clear currentPlayerSeat so no action buttons show
+        room.gameState.currentPlayerSeat = null;
+        room.gameState.actionDeadline = null;
+
+        // Reveal all players' hole cards immediately
+        const revealPayload = room.players
+          .filter((p) => p.status === 'all-in' && p.holeCards)
+          .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, cards: p.holeCards! }));
+        if (revealPayload.length >= 2) {
+          io.to(roomId).emit('game:all-in-reveal', revealPayload);
+        }
+        broadcastRoomState(room); // re-broadcast with null currentPlayerSeat
+      }
+
       const delay = allInRunout ? 3500 : 1500;
       setTimeout(() => progressGame(roomId), delay);
     }
