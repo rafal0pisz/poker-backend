@@ -59,6 +59,7 @@ export interface RoomSettings {
   startingBuyIn: number;
   maxSeats: number;
   actionTimeoutSec: 15 | 30 | 60;
+  tableColor?: string;
 }
 
 export type HandPhase = 'preflop' | 'flop' | 'draw' | 'pineapple-discard' | 'turn' | 'river' | 'showdown';
@@ -250,6 +251,10 @@ export interface ClientToServerEvents {
     callback?: (response: { ok: boolean; error?: string }) => void,
   ) => void;
 
+  'admin:set-table-color': (
+    payload: { color: string },
+    callback: (response: { ok: boolean; error?: string }) => void
+  ) => void;
   'admin:add-chips': (
     payload: { targetSessionToken: string; amount: number },
     callback?: (response: { ok: boolean; error?: string; queued?: boolean }) => void,
