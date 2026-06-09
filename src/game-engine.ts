@@ -331,9 +331,9 @@ export function performAction(
       const plVariant = room.gameState.variant;
       if ((plVariant === 'omaha-pl' || plVariant === 'drawmaha-pl') && !isAllIn) {
         const toCall = room.gameState.currentBet - player.currentBet;
-        const collectedPot = room.gameState.pot + room.gameState.sidePots.reduce((s, p) => s + p.amount, 0);
+        // gameState.pot IS already the sum of all sidePots — adding sidePots again would double-count
         const betsOnTable = room.players.reduce((s, p) => s + (p.currentBet || 0), 0);
-        const effectivePot = collectedPot + betsOnTable;
+        const effectivePot = room.gameState.pot + betsOnTable;
         // PL max = effectivePot + 2×toCall (= call + potAfterCall)
         const potFormula = effectivePot + 2 * toCall;
         // In PLO, if pot < minRaise (e.g. preflop with small blinds),
@@ -370,9 +370,9 @@ export function performAction(
       const plVariantAI = room.gameState.variant;
       if (plVariantAI === 'omaha-pl' || plVariantAI === 'drawmaha-pl') {
         const toCallPL = room.gameState.currentBet - player.currentBet;
-        const collectedPotPL = room.gameState.pot + room.gameState.sidePots.reduce((s, p) => s + p.amount, 0);
+        // gameState.pot IS already sum of sidePots — don't add sidePots again
         const betsOnTablePL = room.players.reduce((s, p) => s + (p.currentBet || 0), 0);
-        const effectivePotPL = collectedPotPL + betsOnTablePL;
+        const effectivePotPL = room.gameState.pot + betsOnTablePL;
         // PL max = effectivePot + 2×toCall (= call + potAfterCall)
         const potFormulaAI = effectivePotPL + 2 * toCallPL;
         const minReqAI = room.gameState.currentBet + room.gameState.minRaise;
