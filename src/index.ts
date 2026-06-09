@@ -1078,7 +1078,8 @@ io.on('connection', (socket) => {
     if (!sessionToken || !roomId) return callback({ ok: false, error: 'No session' });
     const room = roomManager.getRoom(roomId);
     if (!room) return callback({ ok: false, error: 'Room not found' });
-    if (room.adminSessionToken !== sessionToken) return callback({ ok: false, error: 'Not admin' });
+    const adminPlayer = room.players.find(p => p.sessionToken === sessionToken && p.role === 'admin');
+    if (!adminPlayer) return callback({ ok: false, error: 'Not admin' });
 
     const allowed = ['#1a3a1a', '#1F0808', '#0a1a2e', '#1a1a2e', '#1a1208', '#0d0d17'];
     if (!allowed.includes(payload.color)) return callback({ ok: false, error: 'Invalid color' });
