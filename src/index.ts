@@ -1389,15 +1389,8 @@ io.on('connection', (socket) => {
     const result = roomManager.disconnectPlayer(sessionToken);
     if (!result) return;
 
-    // Delay "offline" broadcast by 3s — iOS PWA reconnects in ~1-2s
-    // This prevents the "player went offline" flash for fast reconnects
-    setTimeout(() => {
-      const room = roomManager.getRoom(result.roomId);
-      if (!room) return;
-      const player = room.players.find((p) => p.sessionToken === sessionToken);
-      if (!player || player.connected) return; // already reconnected — skip broadcast
-      broadcastRoomState(room);
-    }, 3000);
+    // Broadcast immediately so all players see the updated state
+    broadcastRoomState(result.room);
 
     // Start grace period — give mobile players time to reconnect
     // before folding them out of the hand
