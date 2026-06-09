@@ -603,7 +603,9 @@ function progressGame(roomId: string) {
     const stillCanAct = room.players.filter(
       (p) => p.status === 'playing' && !p.hasActedThisRound,
     );
-    if (stillCanAct.length <= 1 && room.gameState.phase !== 'showdown') {
+    // Draw phase is already handled above (scheduleDrawSubmitTimer) — never skip it
+    // even during all-in runout. All players participate in the draw.
+    if (stillCanAct.length <= 1 && room.gameState.phase !== 'showdown' && room.gameState.phase !== 'draw') {
       // All-in runout: detect if ALL remaining players are all-in (no one can act).
       // Use a dramatic delay so players can see each street reveal.
       // Normal all-in situations (1 player can still act) get standard delay.
