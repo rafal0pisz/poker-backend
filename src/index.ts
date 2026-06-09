@@ -1073,6 +1073,9 @@ io.on('connection', (socket) => {
   });
 
   socket.on('admin:set-table-color', (payload: { color: string }, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback({ ok: false, error: 'No session' });
     const room = roomManager.getRoom(roomId);
     if (!room) return callback({ ok: false, error: 'Room not found' });
     if (room.adminSessionToken !== sessionToken) return callback({ ok: false, error: 'Not admin' });
