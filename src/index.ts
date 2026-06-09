@@ -1389,7 +1389,15 @@ io.on('connection', (socket) => {
     const result = roomManager.disconnectPlayer(sessionToken);
     if (!result) return;
 
-    broadcastRoomState(result.room);
+    // Delay "offline" broadcast by 3s — iOS PWA reconnects in ~1-2s
+    // This prevents the "player went offline" flash for fast reconnects
+    setTimeout(() => {
+      const room = roomManager.getRoom(result.roomId);
+      if (!room) return;
+      const player = room.players.find((p) => p.sessionToken === sessionToken);
+      if (!player || player.connected) return; // already reconnected — skip broadcast
+      broadcastRoomState(room);
+    }, 3000);
 
     // Start grace period — give mobile players time to reconnect
     // before folding them out of the hand
@@ -1408,6 +1416,12 @@ io.on('connection', (socket) => {
 
       // Now actually fold the player if they were active
       if (room.gameState && player.status === 'playing') {
+        // Don't fold if player already acted this round (e.g. call sent just before disconnect)
+        if (player.hasActedThisRound) {
+          console.log(`[disconnect-grace] ${player.nick} already acted — NOT folding`);
+          broadcastRoomState(room);
+          return;
+        }
         player.status = 'folded';
         broadcastRoomState(room);
         const phase = room.gameState.phase;
