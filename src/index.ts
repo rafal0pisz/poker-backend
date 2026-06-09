@@ -31,9 +31,16 @@ import type {
 
 const PORT = Number(process.env.PORT) || 4000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+// Allow both http and https, and pokero.pl variants
+const ALLOWED_ORIGINS = [
+  FRONTEND_URL,
+  'https://pokero.pl',
+  'https://www.pokero.pl',
+  'http://localhost:3000',
+];
 
 const app = express();
-app.use(cors({ origin: FRONTEND_URL }));
+app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }));
 app.use(express.json());
 
 app.get('/', (_req, res) => {
@@ -44,10 +51,56 @@ const httpServer = createServer(app);
 
 const io = new Server<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>(
   httpServer,
-  { cors: { origin: FRONTEND_URL, credentials: true } },
+  {
+    cors: { origin: ALLOWED_ORIGINS, credentials: true },
+    // Increase ping timeouts — default 20s too short for mobile/free-tier latency
+    pingTimeout: 60000,   // 60s before declaring socket dead
+    pingInterval: 25000,  // check every 25s
+    // Allow bigger payloads (room state with many players)
+    maxHttpBufferSize: 1e6,
+  },
 );
 
 const sessionToSocket = new Map<string, string>();
+
+// Room expiry — clean up inactive rooms every 30 minutes
+// Prevents memory leak on Railway free tier (512MB RAM)
+const ROOM_EXPIRY_MS = 4 * 60 * 60 * 1000; // 4 hours
+
+setInterval(() => {
+  const now = Date.now();
+  let cleaned = 0;
+  for (const [roomId, room] of (roomManager as any).rooms.entries()) {
+    const lastActivity = room.players.reduce(
+      (max: number, p: any) => Math.max(max, p.lastSeenAt || 0), room.createdAt || 0
+    );
+    if (now - lastActivity > ROOM_EXPIRY_MS && room.players.every((p: any) => !p.connected)) {
+      (roomManager as any).rooms.delete(roomId);
+      (roomManager as any).decks?.delete(roomId);
+      cleaned++;
+      console.log(`[cleanup] Expired room ${roomId}`);
+    }
+  }
+  if (cleaned > 0) console.log(`[cleanup] Removed ${cleaned} expired rooms`);
+}, 30 * 60 * 1000); // run every 30 minutes
+
+// Per-room processing queue — prevents concurrent progressGame calls
+// that could corrupt game state (action timer fires same time as player action)
+const roomProcessing = new Map<string, boolean>();
+
+function withRoomLock(roomId: string, fn: () => void): void {
+  if (roomProcessing.get(roomId)) {
+    // Already processing — queue this call for after current finishes
+    setImmediate(() => withRoomLock(roomId, fn));
+    return;
+  }
+  roomProcessing.set(roomId, true);
+  try {
+    fn();
+  } finally {
+    roomProcessing.delete(roomId);
+  }
+}
 
 // Drawmaha decide timers — keyed by roomId
 const drawDecideTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -887,7 +940,7 @@ io.on('connection', (socket) => {
       return callback?.({ ok: false, error: result.error });
     }
     callback?.({ ok: true });
-    progressGame(roomId);
+    withRoomLock(roomId, () => progressGame(roomId));
   });
 
   // ===== DRAWMAHA: Draw phase — submit discard =====
@@ -1389,8 +1442,15 @@ io.on('connection', (socket) => {
     const result = roomManager.disconnectPlayer(sessionToken);
     if (!result) return;
 
-    // Broadcast immediately so all players see the updated state
-    broadcastRoomState(result.room);
+    // Delay "offline" broadcast by 3s — iOS PWA reconnects in ~1-2s
+    // This prevents the "player went offline" flash for fast reconnects
+    setTimeout(() => {
+      const room = roomManager.getRoom(result.roomId);
+      if (!room) return;
+      const player = room.players.find((p) => p.sessionToken === sessionToken);
+      if (!player || player.connected) return; // already reconnected — skip broadcast
+      broadcastRoomState(room);
+    }, 3000);
 
     // Start grace period — give mobile players time to reconnect
     // before folding them out of the hand
