@@ -1,3 +1,4 @@
+import { decideBotAction, getBotNick } from './bot.js';
 import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
@@ -1183,7 +1184,7 @@ io.on('connection', (socket) => {
         smallBlind: 5,
         bigBlind: 10,
         actionTimeoutSec: 30,
-        maxPlayers: 9,
+        maxSeats: 9,
       });
 
       socket.data.sessionToken = sessionToken;

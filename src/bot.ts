@@ -110,7 +110,7 @@ export function decideBotAction(room: Room): BotDecision | null {
   const potOdds = toCall > 0 ? toCall / (pot + toCall) : 0;
   const score = getHandScore(room, bot);
   const rand = Math.random();
-  const bb = gs.bigBlind ?? 10;
+  const bb = (room as any).settings?.bigBlind ?? 10;
 
   // Short stack → shove with decent hand
   if (bot.chips <= bb * 4 && score >= 5) return { action: 'all-in' };
