@@ -1125,6 +1125,51 @@ io.on('connection', (socket) => {
     callback?.({ ok: true });
   });
 
+  // Admin: force advance to next hand (unstick frozen game)
+  socket.on('admin:force-next-hand', (_payload, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback({ ok: false, error: 'No session' });
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback({ ok: false, error: 'Room not found' });
+    const isAdm = room.players.some((p) => p.sessionToken === sessionToken && p.role === 'admin');
+    if (!isAdm) return callback({ ok: false, error: 'Not admin' });
+
+    // Clear all timers for this room
+    clearActionTimer(roomId);
+    clearDrawSubmitTimer(roomId);
+    const decideTimer = drawDecideTimers.get(roomId);
+    if (decideTimer) { clearTimeout(decideTimer); drawDecideTimers.delete(roomId); }
+
+    // If game is in progress, force to showdown and finish hand
+    if (room.gameState && room.gameState.phase !== 'showdown') {
+      room.gameState.phase = 'showdown';
+      room.gameState.currentPlayerSeat = null;
+      room.gameState.actionDeadline = null;
+      // Remaining players check — fold everyone except one if needed
+      const activePlayers = room.players.filter(
+        (p) => p.status === 'playing' || p.status === 'all-in'
+      );
+      if (activePlayers.length === 0) {
+        // No active players — just reset
+        room.gameState.phase = 'showdown';
+      }
+    }
+
+    // Try to start next hand, or just reset state
+    broadcastRoomState(room);
+    setTimeout(() => {
+      const r = roomManager.getRoom(roomId);
+      if (!r) return;
+      r.gameState = null;
+      broadcastRoomState(r);
+      setTimeout(() => tryStartNextHand(roomId), 1000);
+    }, 500);
+
+    emitSystemMessage(roomId, '⚡ Admin forced next hand');
+    callback({ ok: true });
+  });
+
   socket.on('admin:set-table-color', (payload: { color: string }, callback) => {
     const sessionToken = socket.data.sessionToken;
     const roomId = socket.data.roomId;

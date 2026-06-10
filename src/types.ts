@@ -251,6 +251,10 @@ export interface ClientToServerEvents {
     callback?: (response: { ok: boolean; error?: string }) => void,
   ) => void;
 
+  'admin:force-next-hand': (
+    payload: Record<string, never>,
+    callback: (response: { ok: boolean; error?: string }) => void
+  ) => void;
   'admin:set-table-color': (
     payload: { color: string },
     callback: (response: { ok: boolean; error?: string }) => void
