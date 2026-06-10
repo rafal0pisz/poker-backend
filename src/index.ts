@@ -1142,28 +1142,38 @@ io.on('connection', (socket) => {
     if (decideTimer) { clearTimeout(decideTimer); drawDecideTimers.delete(roomId); }
 
     if (room.gameState) {
-      // Return exactly what each player invested this hand:
-      // handContribution = chips put in across all streets (tracked per action)
-      // currentBet = chips bet this street but not yet collected into pot
-      let chipsToDistribute = 0;
-      for (const p of room.players) {
-        const invested = (p.handContribution || 0) + (p.currentBet || 0);
-        p.chips += invested;
-        chipsToDistribute += invested; // sanity check
-        p.currentBet = 0;
-        p.handContribution = 0;
-      }
-      // Any residual chips in pot not covered by handContribution tracking
-      // (e.g. from older hands before this feature) — distribute equally
-      const potRemainder =
-        room.gameState.pot +
-        room.gameState.sidePots.reduce((s, sp) => s + sp.amount, 0);
-      if (potRemainder > 0) {
-        const seated = room.players.filter((p) => p.status !== 'spectator');
-        if (seated.length > 0) {
-          const share = Math.floor(potRemainder / seated.length);
-          const rem = potRemainder % seated.length;
-          seated.forEach((p, i) => { p.chips += share + (i === 0 ? rem : 0); });
+      // Return exactly what each player invested this hand.
+      // handContribution tracks every chip taken from each player across all streets.
+      // It already includes currentBet (incremented at bet-time, before collectBets).
+      // So we ONLY return handContribution — not currentBet separately (double count!)
+      // and NOT the pot separately (pot was built FROM handContributions — double count!)
+      const totalHandContributions = room.players.reduce(
+        (s, p) => s + (p.handContribution || 0), 0
+      );
+
+      if (totalHandContributions > 0) {
+        // Normal case: tracking is active, return exactly what each player put in
+        for (const p of room.players) {
+          p.chips += (p.handContribution || 0);
+          p.currentBet = 0;
+          p.handContribution = 0;
+        }
+      } else {
+        // Fallback: first hand after deploy (no tracking yet) — equal split of pot
+        for (const p of room.players) {
+          p.currentBet = 0;
+          p.handContribution = 0;
+        }
+        const totalPot =
+          room.gameState.pot +
+          room.gameState.sidePots.reduce((s, sp) => s + sp.amount, 0);
+        if (totalPot > 0) {
+          const seated = room.players.filter((p) => p.status !== 'spectator');
+          if (seated.length > 0) {
+            const share = Math.floor(totalPot / seated.length);
+            const rem = totalPot % seated.length;
+            seated.forEach((p, i) => { p.chips += share + (i === 0 ? rem : 0); });
+          }
         }
       }
 
