@@ -60,6 +60,38 @@ class RoomManager {
     return { room, sessionToken };
   }
 
+  createBotPlayer(roomId: string, nick: string, startingChips: number): Player | null {
+    const room = this.rooms.get(roomId);
+    if (!room) return null;
+    const usedSeats = new Set(room.players.map((p) => p.seat));
+    const seat = [1,2,3,4,5,6,7,8].find((s) => !usedSeats.has(s));
+    if (!seat) return null;
+    const sessionToken = `bot_${Math.random().toString(36).slice(2, 10)}`;
+    const bot: Player = {
+      sessionToken,
+      nick,
+      chips: startingChips,
+      seat,
+      role: 'player',
+      status: 'waiting',
+      connected: true,
+      lastSeenAt: Date.now(),
+      currentBet: 0,
+      totalBetInHand: 0,
+      hasActedThisRound: false,
+      preferredVariant: 'texas',
+      totalBuyIn: startingChips,
+      pendingChipsAdjustment: 0,
+      pendingAction: null,
+      handContribution: 0,
+      chipRequest: undefined,
+      isBot: true,
+    };
+    room.players.push(bot);
+    this.sessionToRoom.set(sessionToken, roomId);
+    return bot;
+  }
+
   joinRoom(
     roomId: string,
     nick: string,

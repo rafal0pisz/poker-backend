@@ -40,7 +40,8 @@ export interface Player {
   holeCards?: Card[];
   currentBet: number;
   handContribution: number; // total chips invested this hand (reset at startNewHand)
-  chipRequest?: number;       // pending chip request amount (player asks admin for chips)
+  chipRequest?: number;       // pending chip request amount
+  isBot?: boolean;             // true for AI bot players (player asks admin for chips)
   totalBetInHand: number;
   hasActedThisRound: boolean;
   // Dealer's Choice — preferred game variant when this player is the dealer
@@ -253,6 +254,10 @@ export interface ClientToServerEvents {
     callback?: (response: { ok: boolean; error?: string }) => void,
   ) => void;
 
+  'room:create-with-bot': (
+    payload: { nick: string; botCount?: number },
+    callback: (response: { ok: boolean; roomId?: string; sessionToken?: string; error?: string }) => void
+  ) => void;
   'game:request-chips': (
     payload: { amount: number },
     callback: (response: { ok: boolean; error?: string }) => void

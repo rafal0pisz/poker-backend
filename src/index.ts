@@ -84,6 +84,48 @@ setInterval(() => {
   if (cleaned > 0) console.log(`[cleanup] Removed ${cleaned} expired rooms`);
 }, 30 * 60 * 1000); // run every 30 minutes
 
+// Bot action timers
+const botTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleBotAction(roomId: string) {
+  if (botTimers.has(roomId)) return; // already scheduled
+  const room = roomManager.getRoom(roomId);
+  if (!room?.gameState) return;
+
+  const currentSeat = room.gameState.currentPlayerSeat;
+  if (!currentSeat) return;
+  const currentPlayer = room.players.find((p) => p.seat === currentSeat);
+  if (!currentPlayer || !(currentPlayer as any).isBot) return;
+
+  // Random delay 1.2–2.5s to feel natural
+  const delay = 1200 + Math.floor(Math.random() * 1300);
+  const timer = setTimeout(() => {
+    botTimers.delete(roomId);
+    const r = roomManager.getRoom(roomId);
+    if (!r?.gameState) return;
+    // Re-check it's still bot's turn
+    const bot = r.players.find(
+      (p) => (p as any).isBot && p.seat === r.gameState!.currentPlayerSeat && p.status === 'playing'
+    );
+    if (!bot) return;
+
+    const decision = decideBotAction(r);
+    if (!decision) return;
+
+    console.log(`[Bot] ${bot.nick} → ${decision.action}${decision.amount ? ' ' + decision.amount : ''}`);
+    const result = performAction(r, bot.sessionToken, decision.action, decision.amount);
+    if (!result.ok) {
+      // Fallback: check or fold
+      const fallback = r.gameState!.currentBet > bot.currentBet ? 'fold' : 'check';
+      performAction(r, bot.sessionToken, fallback);
+    }
+    broadcastRoomState(r);
+    withRoomLock(roomId, () => progressGame(roomId));
+  }, delay);
+
+  botTimers.set(roomId, timer);
+}
+
 // Per-room processing queue — prevents concurrent progressGame calls
 // that could corrupt game state (action timer fires same time as player action)
 const roomProcessing = new Map<string, boolean>();
@@ -352,6 +394,8 @@ function applyPendingChips(room: Room) {
 }
 
 function broadcastRoomState(room: Room) {
+  // Schedule bot action if it's a bot's turn
+  scheduleBotAction(room.id);
   for (const player of room.players) {
     const socketId = sessionToSocket.get(player.sessionToken);
     if (socketId) {
@@ -1127,6 +1171,40 @@ io.on('connection', (socket) => {
 
   // Admin: force advance to next hand — returns pot to active players, starts fresh
   // Player requests chips from admin (when at 0 chips)
+  // Create a room pre-populated with bots for testing
+  socket.on('room:create-with-bot', (payload: { nick: string; botCount?: number }, callback) => {
+    try {
+      const nick = payload.nick?.trim();
+      if (!nick || nick.length < 2) return callback({ ok: false, error: 'Nick too short' });
+
+      const botCount = Math.min(payload.botCount ?? 2, 4);
+      const { room, sessionToken } = roomManager.createRoom(nick, {
+        startingBuyIn: 1000,
+        smallBlind: 5,
+        bigBlind: 10,
+        actionTimeoutSec: 30,
+        maxPlayers: 9,
+      });
+
+      socket.data.sessionToken = sessionToken;
+      socket.data.roomId = room.id;
+      socket.join(room.id);
+
+      // Add bots
+      for (let i = 0; i < botCount; i++) {
+        const botNick = getBotNick();
+        roomManager.createBotPlayer(room.id, botNick, 1000);
+      }
+
+      broadcastRoomState(room);
+      console.log(`[Bot room] ${nick} created room ${room.id} with ${botCount} bots`);
+      callback({ ok: true, roomId: room.id, sessionToken });
+    } catch (err) {
+      console.error('[room:create-with-bot]', err);
+      callback({ ok: false, error: 'Server error' });
+    }
+  });
+
   socket.on('game:request-chips', (payload: { amount: number }, callback) => {
     const sessionToken = socket.data.sessionToken;
     const roomId = socket.data.roomId;
