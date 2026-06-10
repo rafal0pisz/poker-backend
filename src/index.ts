@@ -1125,7 +1125,7 @@ io.on('connection', (socket) => {
     callback?.({ ok: true });
   });
 
-  // Admin: force advance to next hand (unstick frozen game)
+  // Admin: force advance to next hand — returns pot to active players, starts fresh
   socket.on('admin:force-next-hand', (_payload, callback) => {
     const sessionToken = socket.data.sessionToken;
     const roomId = socket.data.roomId;
@@ -1135,38 +1135,64 @@ io.on('connection', (socket) => {
     const isAdm = room.players.some((p) => p.sessionToken === sessionToken && p.role === 'admin');
     if (!isAdm) return callback({ ok: false, error: 'Not admin' });
 
-    // Clear all timers for this room
+    // Clear all pending timers
     clearActionTimer(roomId);
     clearDrawSubmitTimer(roomId);
     const decideTimer = drawDecideTimers.get(roomId);
     if (decideTimer) { clearTimeout(decideTimer); drawDecideTimers.delete(roomId); }
 
-    // If game is in progress, force to showdown and finish hand
-    if (room.gameState && room.gameState.phase !== 'showdown') {
-      room.gameState.phase = 'showdown';
-      room.gameState.currentPlayerSeat = null;
-      room.gameState.actionDeadline = null;
-      // Remaining players check — fold everyone except one if needed
-      const activePlayers = room.players.filter(
-        (p) => p.status === 'playing' || p.status === 'all-in'
-      );
-      if (activePlayers.length === 0) {
-        // No active players — just reset
-        room.gameState.phase = 'showdown';
+    if (room.gameState) {
+      // Return exactly what each player invested this hand:
+      // handContribution = chips put in across all streets (tracked per action)
+      // currentBet = chips bet this street but not yet collected into pot
+      let chipsToDistribute = 0;
+      for (const p of room.players) {
+        const invested = (p.handContribution || 0) + (p.currentBet || 0);
+        p.chips += invested;
+        chipsToDistribute += invested; // sanity check
+        p.currentBet = 0;
+        p.handContribution = 0;
       }
+      // Any residual chips in pot not covered by handContribution tracking
+      // (e.g. from older hands before this feature) — distribute equally
+      const potRemainder =
+        room.gameState.pot +
+        room.gameState.sidePots.reduce((s, sp) => s + sp.amount, 0);
+      if (potRemainder > 0) {
+        const seated = room.players.filter((p) => p.status !== 'spectator');
+        if (seated.length > 0) {
+          const share = Math.floor(potRemainder / seated.length);
+          const rem = potRemainder % seated.length;
+          seated.forEach((p, i) => { p.chips += share + (i === 0 ? rem : 0); });
+        }
+      }
+
+      // Step 3: Reset all player statuses to 'waiting' (not sitting-out)
+      for (const p of room.players) {
+        if (p.status === 'playing' || p.status === 'all-in' || p.status === 'folded') {
+          p.status = p.chips > 0 ? 'waiting' : 'sitting-out';
+        }
+        p.holeCards = undefined;
+        p.hasActedThisRound = false;
+      }
+
+      // Step 4: Wipe game state
+      room.gameState = null;
     }
 
-    // Try to start next hand, or just reset state
+    emitSystemMessage(roomId, '⚡ Admin forced next hand — pot returned to players');
     broadcastRoomState(room);
-    setTimeout(() => {
-      const r = roomManager.getRoom(roomId);
-      if (!r) return;
-      r.gameState = null;
-      broadcastRoomState(r);
-      setTimeout(() => tryStartNextHand(roomId), 1000);
-    }, 500);
 
-    emitSystemMessage(roomId, '⚡ Admin forced next hand');
+    // Start next hand after a short delay
+    setTimeout(() => {
+      const started = tryStartNextHand(roomId);
+      if (!started) {
+        // Not enough players yet — broadcast lobby state
+        const r = roomManager.getRoom(roomId);
+        if (r) broadcastRoomState(r);
+      }
+    }, 1500);
+
     callback({ ok: true });
   });
 

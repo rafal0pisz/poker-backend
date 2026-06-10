@@ -39,6 +39,7 @@ export interface Player {
   lastSeenAt: number;
   holeCards?: Card[];
   currentBet: number;
+  handContribution: number; // total chips invested this hand (reset at startNewHand)
   totalBetInHand: number;
   hasActedThisRound: boolean;
   // Dealer's Choice — preferred game variant when this player is the dealer

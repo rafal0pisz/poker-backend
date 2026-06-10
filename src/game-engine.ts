@@ -153,6 +153,7 @@ export function solvePineapple(
 export function startNewHand(room: Room): { deck: Card[] } {
   for (const player of room.players) {
     player.currentBet = 0;
+    player.handContribution = 0;
     player.totalBetInHand = 0;
     player.hasActedThisRound = false;
     player.holeCards = undefined;
@@ -213,11 +214,13 @@ export function startNewHand(room: Room): { deck: Card[] } {
 
   sbPlayer.chips -= sb;
   sbPlayer.currentBet = sb;
+  sbPlayer.handContribution = (sbPlayer.handContribution || 0) + sb;
   sbPlayer.totalBetInHand = sb;
   if (sbPlayer.chips === 0) sbPlayer.status = 'all-in';
 
   bbPlayer.chips -= bb;
   bbPlayer.currentBet = bb;
+  bbPlayer.handContribution = (bbPlayer.handContribution || 0) + bb;
   bbPlayer.totalBetInHand = bb;
   if (bbPlayer.chips === 0) bbPlayer.status = 'all-in';
 
@@ -304,6 +307,7 @@ export function performAction(
       const callAmount = Math.min(toCall, player.chips);
       player.chips -= callAmount;
       player.currentBet += callAmount;
+      player.handContribution = (player.handContribution || 0) + callAmount;
       player.totalBetInHand += callAmount;
       if (player.chips === 0) player.status = 'all-in';
       player.hasActedThisRound = true;
@@ -347,6 +351,7 @@ export function performAction(
       const raiseSize = amount - room.gameState.currentBet;
       player.chips -= additionalChips;
       player.currentBet = amount;
+      player.handContribution = (player.handContribution || 0) + additionalChips;
       player.totalBetInHand += additionalChips;
       room.gameState.currentBet = amount;
       room.gameState.minRaise = Math.max(raiseSize, room.settings.bigBlind);
