@@ -39,6 +39,7 @@ class RoomManager {
       totalBuyIn: settings.startingBuyIn, // initial buy-in from room creation
       pendingChipsAdjustment: 0,
       pendingAction: null,
+      handContribution: 0,
     };
 
     const room: Room = {
@@ -111,6 +112,7 @@ class RoomManager {
       totalBuyIn: 0, // chips received via admin panel (tracked separately)
       pendingChipsAdjustment: 0,
       pendingAction: null,
+      handContribution: 0,
     };
 
     room.players.push(newPlayer);
