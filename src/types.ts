@@ -40,6 +40,7 @@ export interface Player {
   holeCards?: Card[];
   currentBet: number;
   handContribution: number; // total chips invested this hand (reset at startNewHand)
+  chipRequest?: number;       // pending chip request amount (player asks admin for chips)
   totalBetInHand: number;
   hasActedThisRound: boolean;
   // Dealer's Choice — preferred game variant when this player is the dealer
@@ -252,6 +253,22 @@ export interface ClientToServerEvents {
     callback?: (response: { ok: boolean; error?: string }) => void,
   ) => void;
 
+  'game:request-chips': (
+    payload: { amount: number },
+    callback: (response: { ok: boolean; error?: string }) => void
+  ) => void;
+  'game:cancel-chip-request': (
+    payload: Record<string, never>,
+    callback: (response: { ok: boolean }) => void
+  ) => void;
+  'admin:decline-chip-request': (
+    payload: { targetSessionToken: string },
+    callback: (response: { ok: boolean }) => void
+  ) => void;
+  'admin:approve-chip-request': (
+    payload: { targetSessionToken: string },
+    callback: (response: { ok: boolean; error?: string }) => void
+  ) => void;
   'admin:force-next-hand': (
     payload: Record<string, never>,
     callback: (response: { ok: boolean; error?: string }) => void

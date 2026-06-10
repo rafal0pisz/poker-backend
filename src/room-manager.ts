@@ -40,6 +40,7 @@ class RoomManager {
       pendingChipsAdjustment: 0,
       pendingAction: null,
       handContribution: 0,
+      chipRequest: undefined,
     };
 
     const room: Room = {
@@ -113,6 +114,7 @@ class RoomManager {
       pendingChipsAdjustment: 0,
       pendingAction: null,
       handContribution: 0,
+      chipRequest: undefined,
     };
 
     room.players.push(newPlayer);

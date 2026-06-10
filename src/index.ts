@@ -1126,6 +1126,69 @@ io.on('connection', (socket) => {
   });
 
   // Admin: force advance to next hand — returns pot to active players, starts fresh
+  // Player requests chips from admin (when at 0 chips)
+  socket.on('game:request-chips', (payload: { amount: number }, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback({ ok: false, error: 'No session' });
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback({ ok: false, error: 'Room not found' });
+    const player = room.players.find((p) => p.sessionToken === sessionToken);
+    if (!player) return callback({ ok: false, error: 'Player not found' });
+    if (player.chips > 0) return callback({ ok: false, error: 'You still have chips' });
+    const amount = Math.floor(payload.amount);
+    if (amount < 1 || amount > 100000) return callback({ ok: false, error: 'Invalid amount' });
+    player.chipRequest = amount;
+    broadcastRoomState(room);
+    emitSystemMessage(roomId, `🪙 ${player.nick} requests ${amount} chips`);
+    callback({ ok: true });
+  });
+
+  socket.on('game:cancel-chip-request', (_payload, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback({ ok: false });
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback({ ok: false });
+    const player = room.players.find((p) => p.sessionToken === sessionToken);
+    if (player) { player.chipRequest = undefined; broadcastRoomState(room); }
+    callback({ ok: true });
+  });
+
+  socket.on('admin:decline-chip-request', (payload: { targetSessionToken: string }, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback?.({ ok: false });
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback?.({ ok: false });
+    const isAdm = room.players.some((p) => p.sessionToken === sessionToken && p.role === 'admin');
+    if (!isAdm) return callback?.({ ok: false });
+    const target = room.players.find((p) => p.sessionToken === payload.targetSessionToken);
+    if (target) { target.chipRequest = undefined; broadcastRoomState(room); }
+    callback?.({ ok: true });
+  });
+
+  socket.on('admin:approve-chip-request', (payload: { targetSessionToken: string }, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback({ ok: false, error: 'No session' });
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback({ ok: false, error: 'Room not found' });
+    const isAdm = room.players.some((p) => p.sessionToken === sessionToken && p.role === 'admin');
+    if (!isAdm) return callback({ ok: false, error: 'Not admin' });
+    const target = room.players.find((p) => p.sessionToken === payload.targetSessionToken);
+    if (!target) return callback({ ok: false, error: 'Player not found' });
+    const amount = target.chipRequest;
+    if (!amount) return callback({ ok: false, error: 'No request pending' });
+    target.chips += amount;
+    target.totalBuyIn += amount;
+    target.chipRequest = undefined;
+    if (target.status === 'sitting-out' && target.chips > 0) target.status = 'waiting';
+    broadcastRoomState(room);
+    emitSystemMessage(roomId, `✅ ${target.nick} received ${amount} chips`);
+    callback({ ok: true });
+  });
+
   socket.on('admin:force-next-hand', (_payload, callback) => {
     const sessionToken = socket.data.sessionToken;
     const roomId = socket.data.roomId;
