@@ -877,7 +877,11 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
       ...omahaEvalMap.get(p.sessionToken)!,
     }));
     const omahaWinnerHands = Hand.winners(omahaEligible.map((e) => e.hand));
-    const omahaWinners = omahaEligible.filter((e) => omahaWinnerHands.includes(e.hand));
+    const bestOmahaRank = Math.max(...omahaWinnerHands.map((h: any) => h.rank ?? 0));
+    const bestOmahaDescr = (omahaWinnerHands[0] as any)?.descr ?? '';
+    const omahaWinners = omahaEligible.filter(
+      (e) => (e.hand.rank ?? 0) === bestOmahaRank && e.hand.descr === bestOmahaDescr
+    );
 
     // Draw (Texas) winner(s) for this pot
     const texasEligible = eligible.map((p) => ({
@@ -885,7 +889,11 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
       ...texasEvalMap.get(p.sessionToken)!,
     }));
     const texasWinnerHands = Hand.winners(texasEligible.map((e) => e.hand));
-    const texasWinners = texasEligible.filter((e) => texasWinnerHands.includes(e.hand));
+    const bestTexasRank = Math.max(...texasWinnerHands.map((h: any) => h.rank ?? 0));
+    const bestTexasDescr = (texasWinnerHands[0] as any)?.descr ?? '';
+    const texasWinners = texasEligible.filter(
+      (e) => (e.hand.rank ?? 0) === bestTexasRank && e.hand.descr === bestTexasDescr
+    );
 
     // Distribute Omaha share
     const omahaPerWinner = Math.floor(omahaShare / omahaWinners.length);
@@ -1210,8 +1218,10 @@ export function finishHand(room: Room): HandResult {
       }));
 
       const winners = Hand.winners(hands.map((h) => h.hand));
+      const bestRank = Math.max(...winners.map((w: any) => w.rank ?? 0));
+      const bestDescr = (winners[0] as any)?.descr ?? '';
       const winningSessionTokens = hands
-        .filter((h) => winners.includes(h.hand))
+        .filter((h) => (h.hand.rank ?? 0) === bestRank && h.hand.descr === bestDescr)
         .map((h) => h.sessionToken);
 
       if (potIndex === 0 && winners.length > 0 && result.winningCards.length === 0) {

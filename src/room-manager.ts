@@ -362,7 +362,9 @@ class RoomManager {
         (room.gameState.variant === 'drawmaha' || room.gameState.variant === 'drawmaha-pl') &&
         room.gameState.phase !== 'showdown';
 
-      if (anyAllIn && playersWhoCanStillAct.length === 0 && !isDrawmahaPreDraw) {
+      // Require at least 2 players in the hand — if only 1 all-in and everyone else folded,
+      // no showdown → don't reveal (bluffer wins without showing cards)
+      if (anyAllIn && playersWhoCanStillAct.length === 0 && stillInHand.length >= 2 && !isDrawmahaPreDraw) {
         // Reveal cards of every player still in the hand
         for (const p of stillInHand) {
           revealedTokens.add(p.sessionToken);
