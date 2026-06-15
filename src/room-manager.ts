@@ -88,6 +88,7 @@ class RoomManager {
       isBot: true,
     };
     room.players.push(bot);
+    room.players.sort((a, b) => a.seat - b.seat); // keep seat order
     this.sessionToRoom.set(sessionToken, roomId);
     return bot;
   }
@@ -150,6 +151,7 @@ class RoomManager {
     };
 
     room.players.push(newPlayer);
+    room.players.sort((a, b) => a.seat - b.seat); // keep seat order on join
     this.sessionToRoom.set(newSessionToken, roomId);
 
     return { ok: true, room, sessionToken: newSessionToken };

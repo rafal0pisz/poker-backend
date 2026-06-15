@@ -173,7 +173,9 @@ export function startNewHand(room: Room): { deck: Card[] } {
     player.status = 'playing';
   }
 
-  const activePlayers = getActivePlayers(room);
+  // Always sort by seat number — room.players is in insert order which
+  // may not match seat order after players leave and rejoin
+  const activePlayers = getActivePlayers(room).sort((a, b) => a.seat - b.seat);
 
   if (activePlayers.length < 2) {
     throw new Error('Not enough active players to start a hand');
