@@ -1522,6 +1522,51 @@ io.on('connection', (socket) => {
     callback?.({ ok: true });
   });
 
+  // Move a player to a different seat. Only allowed when no hand is in progress.
+  socket.on('admin:move-player-seat', (payload, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) {
+      return callback?.({ ok: false, error: 'No session' });
+    }
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback?.({ ok: false, error: 'Room not found' });
+
+    const admin = room.players.find((p) => p.sessionToken === sessionToken);
+    if (!admin || (admin.role !== 'admin' && admin.role !== 'vice-admin')) {
+      return callback?.({ ok: false, error: 'No permission' });
+    }
+
+    // Only allow when no hand is in progress
+    if (room.gameState && room.gameState.phase !== 'showdown') {
+      return callback?.({ ok: false, error: 'Cannot move seats while a hand is in progress' });
+    }
+
+    const target = room.players.find((p) => p.sessionToken === payload.targetSessionToken);
+    if (!target) return callback?.({ ok: false, error: 'Player not found' });
+
+    const newSeat = payload.newSeat;
+    if (newSeat < 0 || newSeat >= room.settings.maxSeats) {
+      return callback?.({ ok: false, error: 'Invalid seat number' });
+    }
+
+    // Check if the seat is occupied
+    const occupant = room.players.find((p) => p.seat === newSeat && p.sessionToken !== target.sessionToken);
+    if (occupant) {
+      return callback?.({ ok: false, error: `Seat ${newSeat} is already taken by ${occupant.nick}` });
+    }
+
+    const oldSeat = target.seat;
+    target.seat = newSeat;
+    // Re-sort players by seat to keep array order consistent
+    room.players.sort((a, b) => a.seat - b.seat);
+
+    console.log(`[admin:move-player-seat] ${admin.nick} moved ${target.nick} from seat ${oldSeat} to seat ${newSeat}`);
+    broadcastRoomState(room);
+    emitSystemMessage(roomId, `${admin.nick} moved ${target.nick} to seat ${newSeat}`);
+    callback?.({ ok: true });
+  });
+
   // ===== Pause / Unpause =====
   socket.on('game:pause', (callback) => {
     const sessionToken = socket.data.sessionToken;

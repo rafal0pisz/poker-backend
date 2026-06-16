@@ -294,6 +294,11 @@ export interface ClientToServerEvents {
     payload: { targetSessionToken: string },
     callback?: (response: { ok: boolean; error?: string }) => void,
   ) => void;
+  // Move a player to a different seat. Only allowed when no hand is in progress.
+  'admin:move-player-seat': (
+    payload: { targetSessionToken: string; newSeat: number },
+    callback?: (response: { ok: boolean; error?: string }) => void,
+  ) => void;
 
   // Chat
   'chat:send': (
