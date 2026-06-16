@@ -134,10 +134,17 @@ export function solvePineapple(
     for (const hc of combinations(holeCards, holeCount)) {
       for (const bc of combinations(boardCards, boardCount)) {
         const hand = Hand.solve([...hc, ...bc]);
-        if (!bestHand || Hand.winners([bestHand, hand])[0] === hand && Hand.winners([bestHand, hand]).length === 1) {
+        if (!bestHand) {
           bestHand = hand;
           bestHoleUsed = hc as Card[];
           bestBoardUsed = bc as Card[];
+        } else {
+          const winners = Hand.winners([bestHand, hand]);
+          if (winners.includes(hand) && !winners.includes(bestHand)) {
+            bestHand = hand;
+            bestHoleUsed = hc as Card[];
+            bestBoardUsed = bc as Card[];
+          }
         }
       }
     }
@@ -874,28 +881,25 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
     const texasShare = halfPot;
 
     // Omaha winner(s) for this pot
+    // CRITICAL: Hand.winners() correctly handles kicker comparison.
+    // Two flushes with same rank ("Flush") and same descr ("Flush, As High")
+    // can still have DIFFERENT kickers (e.g. A-K-J-4-3 beats A-K-T-5-3).
+    // pokersolver's winners() compares full card ranks internally — we MUST trust it
+    // and filter by object identity, not by stringified description.
     const omahaEligible = eligible.map((p) => ({
       player: p,
       ...omahaEvalMap.get(p.sessionToken)!,
     }));
     const omahaWinnerHands = Hand.winners(omahaEligible.map((e) => e.hand));
-    const bestOmahaRank = Math.max(...omahaWinnerHands.map((h: any) => h.rank ?? 0));
-    const bestOmahaDescr = (omahaWinnerHands[0] as any)?.descr ?? '';
-    const omahaWinners = omahaEligible.filter(
-      (e) => (e.hand.rank ?? 0) === bestOmahaRank && e.hand.descr === bestOmahaDescr
-    );
+    const omahaWinners = omahaEligible.filter((e) => omahaWinnerHands.includes(e.hand));
 
-    // Draw (Texas) winner(s) for this pot
+    // Draw (Texas) winner(s) for this pot — same fix as above
     const texasEligible = eligible.map((p) => ({
       player: p,
       ...texasEvalMap.get(p.sessionToken)!,
     }));
     const texasWinnerHands = Hand.winners(texasEligible.map((e) => e.hand));
-    const bestTexasRank = Math.max(...texasWinnerHands.map((h: any) => h.rank ?? 0));
-    const bestTexasDescr = (texasWinnerHands[0] as any)?.descr ?? '';
-    const texasWinners = texasEligible.filter(
-      (e) => (e.hand.rank ?? 0) === bestTexasRank && e.hand.descr === bestTexasDescr
-    );
+    const texasWinners = texasEligible.filter((e) => texasWinnerHands.includes(e.hand));
 
     // Distribute Omaha share
     const omahaPerWinner = Math.floor(omahaShare / omahaWinners.length);
@@ -1220,10 +1224,12 @@ export function finishHand(room: Room): HandResult {
       }));
 
       const winners = Hand.winners(hands.map((h) => h.hand));
-      const bestRank = Math.max(...winners.map((w: any) => w.rank ?? 0));
-      const bestDescr = (winners[0] as any)?.descr ?? '';
+      // CRITICAL: filter by object identity (winners contains the actual winning Hand objects).
+      // DO NOT compare by rank+descr — two flushes can share rank=6 and descr="Flush, As High"
+      // but have different kickers (e.g. A-K-J-4-3 beats A-K-T-5-3). Hand.winners() already
+      // handles kicker comparison correctly internally.
       const winningSessionTokens = hands
-        .filter((h) => (h.hand.rank ?? 0) === bestRank && h.hand.descr === bestDescr)
+        .filter((h) => winners.includes(h.hand))
         .map((h) => h.sessionToken);
 
       if (potIndex === 0 && winners.length > 0 && result.winningCards.length === 0) {
