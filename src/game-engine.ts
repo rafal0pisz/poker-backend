@@ -10,6 +10,7 @@ import type {
   HandPhase,
   HandResult,
   Player,
+  PotWinBreakdown,
   Room,
   SidePot,
 } from './types.js';
@@ -861,6 +862,11 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
   let mainPotOmahaAmount = 0;
   let mainPotTexasAmount = 0;
 
+  // Initialize potBreakdown for multi-pot scenarios (side pots present)
+  if (allPots.length > 1) {
+    result.potBreakdown = [];
+  }
+
   for (let potIndex = 0; potIndex < allPots.length; potIndex++) {
     const pot = allPots[potIndex];
     const eligible = remaining.filter((p) => pot.eligiblePlayers.includes(p.sessionToken));
@@ -872,6 +878,13 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
       const winner = eligible[0];
       addWinnings(winner, pot.amount);
       console.log(`[Drawmaha] Pot #${potIndex} (${pot.amount}): ${winner.nick} wins uncontested`);
+      if (result.potBreakdown) {
+        result.potBreakdown.push({
+          label: potIndex === 0 ? 'Main pot' : `Side pot ${potIndex}`,
+          amount: pot.amount,
+          winners: [{ sessionToken: winner.sessionToken, amount: pot.amount }],
+        });
+      }
       continue;
     }
 
@@ -902,11 +915,20 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
     const texasWinners = texasEligible.filter((e) => texasWinnerHands.includes(e.hand));
 
     // Distribute Omaha share
+    // Track winners for this pot's breakdown (for UI)
+    const potWinners: PotWinBreakdown['winners'] = [];
+
     const omahaPerWinner = Math.floor(omahaShare / omahaWinners.length);
     const omahaRemainder = omahaShare % omahaWinners.length;
     omahaWinners.forEach(({ player, hand }, i) => {
       const share = omahaPerWinner + (i === 0 ? omahaRemainder : 0);
       addWinnings(player, share, `Omaha: ${hand.descr}`);
+      potWinners.push({
+        sessionToken: player.sessionToken,
+        amount: share,
+        handDescription: hand.descr,
+        drawmahaHalf: 'omaha',
+      });
     });
 
     // Distribute Draw share
@@ -915,6 +937,12 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
     texasWinners.forEach(({ player, hand }, i) => {
       const share = texasPerWinner + (i === 0 ? texasRemainder : 0);
       addWinnings(player, share, `Draw: ${hand.descr}`);
+      potWinners.push({
+        sessionToken: player.sessionToken,
+        amount: share,
+        handDescription: hand.descr,
+        drawmahaHalf: 'draw',
+      });
     });
 
     // Safety check: ensure total distributed == pot.amount (no chips lost to rounding)
@@ -926,6 +954,19 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
       // Give any remaining chip(s) to the omaha winner (standard casino rule)
       addWinnings(omahaWinners[0].player, missing, 'Odd chip');
       console.warn(`[Drawmaha] Odd chip(s) +${missing} → ${omahaWinners[0].player.nick}`);
+      // Adjust breakdown for odd chip
+      const omahaEntry = potWinners.find(
+        (w) => w.sessionToken === omahaWinners[0].player.sessionToken && w.drawmahaHalf === 'omaha'
+      );
+      if (omahaEntry) omahaEntry.amount += missing;
+    }
+
+    if (result.potBreakdown) {
+      result.potBreakdown.push({
+        label: potIndex === 0 ? 'Main pot' : `Side pot ${potIndex}`,
+        amount: pot.amount,
+        winners: potWinners,
+      });
     }
 
     const omahaDescr = omahaWinners[0]?.hand?.descr ?? '?';
@@ -1213,6 +1254,11 @@ export function finishHand(room: Room): HandResult {
       });
     }
 
+    // Initialize potBreakdown for the UI (only if there are 2+ pots, otherwise unnecessary)
+    if (allPots.length > 1) {
+      result.potBreakdown = [];
+    }
+
     for (let potIndex = 0; potIndex < allPots.length; potIndex++) {
       const pot = allPots[potIndex];
       const eligible = remaining.filter((p) => pot.eligiblePlayers.includes(p.sessionToken));
@@ -1256,6 +1302,9 @@ export function finishHand(room: Room): HandResult {
       const sharePerWinner = Math.floor(pot.amount / winningSessionTokens.length);
       const remainder = pot.amount - sharePerWinner * winningSessionTokens.length;
 
+      // Track this pot's winners for breakdown
+      const potWinners: PotWinBreakdown['winners'] = [];
+
       for (let i = 0; i < winningSessionTokens.length; i++) {
         const winnerToken = winningSessionTokens[i];
         const player = room.players.find((p) => p.sessionToken === winnerToken)!;
@@ -1273,6 +1322,20 @@ export function finishHand(room: Room): HandResult {
             handDescription: evaluated.descr,
           });
         }
+
+        potWinners.push({
+          sessionToken: winnerToken,
+          amount: share,
+          handDescription: evaluations.get(winnerToken)!.hand.descr,
+        });
+      }
+
+      if (result.potBreakdown) {
+        result.potBreakdown.push({
+          label: potIndex === 0 ? 'Main pot' : `Side pot ${potIndex}`,
+          amount: pot.amount,
+          winners: potWinners,
+        });
       }
     }
   }

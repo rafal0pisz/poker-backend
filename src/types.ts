@@ -82,6 +82,26 @@ export interface HandResult {
     omahaWinner: { sessionToken: string; amount: number; handDescription: string };
     texasWinner: { sessionToken: string; amount: number; handDescription: string };
   };
+  // Per-pot breakdown — lets the UI show "Main pot: X +100, Side pot 1: Y +50" etc.
+  // Empty if there was only one pot (main pot, no side pots).
+  // For each pot in order: main pot first, then side pots in creation order.
+  potBreakdown?: PotWinBreakdown[];
+}
+
+export interface PotWinBreakdown {
+  // Pot label for the UI — "Main pot" or "Side pot 1", "Side pot 2", etc.
+  label: string;
+  // Total amount in this pot
+  amount: number;
+  // Winners of this specific pot (may be split between multiple players in case of tie)
+  winners: {
+    sessionToken: string;
+    amount: number; // chips received from THIS pot specifically
+    handDescription?: string;
+    // For Drawmaha: which half (Omaha or Draw) this player won
+    // Undefined for Texas/Omaha/other variants
+    drawmahaHalf?: 'omaha' | 'draw';
+  }[];
 }
 
 // ===== DRAWMAHA DRAW STATE =====
