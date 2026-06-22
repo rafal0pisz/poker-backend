@@ -496,8 +496,8 @@ function describeHandResult(room: Room): string {
     }
     return (
       `🃏 Split pot — ` +
-      `${omahaNick} won ${omahaWinner.netAmount ?? omahaWinner.amount} (Omaha: ${omahaWinner.handDescription}), ` +
-      `${texasNick} won ${texasWinner.netAmount ?? texasWinner.amount} (Texas: ${texasWinner.handDescription})`
+      `${omahaNick} won ${omahaWinner.amount} (Omaha: ${omahaWinner.handDescription}), ` +
+      `${texasNick} won ${texasWinner.amount} (Texas: ${texasWinner.handDescription})`
     );
   }
 
