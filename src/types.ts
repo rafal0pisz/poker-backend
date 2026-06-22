@@ -81,6 +81,8 @@ export interface HandResult {
   drawmahaResult?: {
     omahaWinner: { sessionToken: string; amount: number; handDescription: string };
     texasWinner: { sessionToken: string; amount: number; handDescription: string };
+    omahaWinners?: { sessionToken: string; amount: number; handDescription: string }[];
+    texasWinners?: { sessionToken: string; amount: number; handDescription: string }[];
   };
   // Per-pot breakdown — lets the UI show "Main pot: X +100, Side pot 1: Y +50" etc.
   // Empty if there was only one pot (main pot, no side pots).
