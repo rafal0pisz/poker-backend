@@ -871,7 +871,22 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
     const pot = allPots[potIndex];
     const eligible = remaining.filter((p) => pot.eligiblePlayers.includes(p.sessionToken));
 
-    if (eligible.length === 0 || pot.amount === 0) continue;
+    if (pot.amount === 0) continue;
+    if (eligible.length === 0) {
+      // All players eligible for this side pot have folded.
+      // Cascade chips to the next pot, or give to overall remaining if last pot.
+      if (potIndex + 1 < allPots.length) {
+        allPots[potIndex + 1] = { ...allPots[potIndex + 1], amount: allPots[potIndex + 1].amount + pot.amount };
+        console.log('[finishHand] Pot #' + potIndex + ' (' + pot.amount + '): all eligible folded — cascaded to pot #' + (potIndex+1));
+      } else {
+        // Last pot — distribute to all remaining (showdown players)
+        const share = Math.floor(pot.amount / remaining.length);
+        const rem = pot.amount % remaining.length;
+        remaining.forEach((p, i) => { result.winnings.push({ sessionToken: p.sessionToken, amount: share + (i === 0 ? rem : 0) }); p.chips += share + (i === 0 ? rem : 0); });
+        console.log('[finishHand] Pot #' + potIndex + ' (' + pot.amount + '): all eligible folded — split among remaining');
+      }
+      continue;
+    }
 
     if (eligible.length === 1) {
       // Only one player can win this pot — they take it all regardless of hand strength
@@ -1261,8 +1276,16 @@ export function finishHand(room: Room): HandResult {
 
     for (let potIndex = 0; potIndex < allPots.length; potIndex++) {
       const pot = allPots[potIndex];
-      const eligible = remaining.filter((p) => pot.eligiblePlayers.includes(p.sessionToken));
-      if (eligible.length === 0) continue;
+      let eligible = remaining.filter((p) => pot.eligiblePlayers.includes(p.sessionToken));
+      if (eligible.length === 0) {
+        // All eligible players folded — cascade to next pot
+        if (potIndex + 1 < allPots.length) {
+          allPots[potIndex + 1] = { ...allPots[potIndex + 1], amount: allPots[potIndex + 1].amount + pot.amount };
+        } else {
+          eligible = remaining;
+        }
+        continue;
+      }
 
       const hands = eligible.map((p) => ({
         sessionToken: p.sessionToken,
