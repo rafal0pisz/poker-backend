@@ -1065,14 +1065,6 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
   room.gameState.pot = 0;
   room.gameState.sidePots = [];
 
-  // Calculate netAmount for each winner
-  for (const w of result.winnings) {
-    const player = room.players.find(p => p.sessionToken === w.sessionToken);
-    if (player) {
-      w.netAmount = Math.max(0, w.amount - (player.totalBetInHand || 0));
-    }
-  }
-
   // Note: holeCards are intentionally NOT cleared here.
   // They remain available so players can use "Show Hand" during the showdown window.
   // holeCards are cleared at the start of the NEXT hand in startNewHand().
@@ -1151,10 +1143,31 @@ export function advancePhase(room: Room, deck: Card[]): void {
     room.gameState.currentBet = 0;
     room.gameState.minRaise = room.settings.bigBlind;
     for (const p of room.players) p.hasActedThisRound = false;
-    if (nextPhase === 'turn' || nextPhase === 'river') {
+
+    // Deal community cards for each street
+    if (nextPhase === 'flop') {
+      deck.pop(); // burn card
+      room.gameState.communityCards.push(deck.pop()!, deck.pop()!, deck.pop()!);
+    } else if (nextPhase === 'turn' || nextPhase === 'river') {
+      deck.pop(); // burn card
       room.gameState.communityCards.push(deck.pop()!);
     }
+
     room.gameState.pineappleDiscardState = undefined;
+
+    // Set first-to-act player and action deadline (same as standard streets)
+    if (nextPhase !== 'showdown') {
+      const firstSeat = getNextActiveSeat(room, room.gameState.dealerSeat, false);
+      room.gameState.currentPlayerSeat = firstSeat;
+      room.gameState.actionDeadline = Date.now() + room.settings.actionTimeoutSec * 1000;
+      const stillPlaying = room.players.filter((p) => p.status === 'playing');
+      if (stillPlaying.length <= 1) {
+        for (const p of stillPlaying) p.hasActedThisRound = true;
+      }
+    } else {
+      room.gameState.currentPlayerSeat = null;
+      room.gameState.actionDeadline = null;
+    }
     return;
   }
 

@@ -269,8 +269,10 @@ function updatePlayerStats(room: Room, result: import('./types.js').HandResult):
     const stats = room.playerStats[sc.sessionToken];
     if (!stats) continue;
     // Simple hand rank ordering
+    // Note: pokersolver reports Royal Flush as "Straight Flush, As High"
+    // (no separate "Royal Flush" name), so we only use Straight Flush here.
     const HAND_RANK: Record<string, number> = {
-      'Royal Flush': 9, 'Straight Flush': 8, 'Four of a Kind': 7,
+      'Straight Flush': 8, 'Four of a Kind': 7,
       'Full House': 6, 'Flush': 5, 'Straight': 4,
       'Three of a Kind': 3, 'Two Pair': 2, 'Pair': 1, 'High Card': 0,
     };
@@ -494,8 +496,8 @@ function describeHandResult(room: Room): string {
     }
     return (
       `🃏 Split pot — ` +
-      `${omahaNick} won ${omahaWinner.amount} (Omaha: ${omahaWinner.handDescription}), ` +
-      `${texasNick} won ${texasWinner.amount} (Texas: ${texasWinner.handDescription})`
+      `${omahaNick} won ${omahaWinner.netAmount ?? omahaWinner.amount} (Omaha: ${omahaWinner.handDescription}), ` +
+      `${texasNick} won ${texasWinner.netAmount ?? texasWinner.amount} (Texas: ${texasWinner.handDescription})`
     );
   }
 
@@ -503,7 +505,7 @@ function describeHandResult(room: Room): string {
     const player = room.players.find((p) => p.sessionToken === w.sessionToken);
     const nick = player?.nick || '?';
     const hand = w.handDescription ? ` with ${w.handDescription}` : '';
-    return `${nick} won ${w.amount}${hand}`;
+    return `${nick} won ${w.netAmount ?? w.amount}${hand}`;
   });
   return parts.join(', ');
 }
