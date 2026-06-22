@@ -802,6 +802,9 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
     room.gameState.pot = 0;
     room.gameState.sidePots = [];
     for (const p of room.players) p.holeCards = undefined;
+  result.playerStacks = room.players
+    .filter((p) => p.status !== 'spectator')
+    .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, chips: p.chips }));
     return result;
   }
 
@@ -816,6 +819,9 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
     room.gameState.pot = 0;
     room.gameState.sidePots = [];
     for (const p of room.players) p.holeCards = undefined;
+  result.playerStacks = room.players
+    .filter((p) => p.status !== 'spectator')
+    .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, chips: p.chips }));
     return result;
   }
 
@@ -1079,6 +1085,9 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
     }
   }
 
+  result.playerStacks = room.players
+    .filter((p) => p.status !== 'spectator')
+    .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, chips: p.chips }));
   return result;
 }
 
@@ -1407,6 +1416,9 @@ export function finishHand(room: Room): HandResult {
     }
   }
 
+  result.playerStacks = room.players
+    .filter((p) => p.status !== 'spectator')
+    .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, chips: p.chips }));
   return result;
 }
 

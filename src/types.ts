@@ -81,6 +81,7 @@ export interface HandResult {
   handNumber?: number;
   totalPot?: number;
   variant?: string;
+  playerStacks?: { sessionToken: string; nick: string; chips: number }[];
   // Drawmaha split pot result (optional)
   drawmahaResult?: {
     omahaWinner: { sessionToken: string; amount: number; handDescription: string };
