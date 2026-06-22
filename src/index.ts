@@ -652,11 +652,12 @@ function progressGame(roomId: string) {
     if (desc) emitSystemMessage(roomId, desc);
 
     clearActionTimer(roomId); // hand over
+    const resultDelay1 = (room.gameState.variant === 'drawmaha' || room.gameState.variant === 'drawmaha-pl') ? 9000 : 6000;
     setTimeout(() => {
       const r = roomManager.getRoom(roomId);
       if (r && applyPendingChips(r)) broadcastRoomState(r);
       tryStartNextHand(roomId);
-    }, 6000);
+    }, resultDelay1);
     return;
   }
 
@@ -673,11 +674,12 @@ function progressGame(roomId: string) {
       if (desc) emitSystemMessage(roomId, desc);
 
       clearActionTimer(roomId); // hand over
+      const resultDelay2 = (room.gameState.variant === 'drawmaha' || room.gameState.variant === 'drawmaha-pl') ? 9000 : 6000;
       setTimeout(() => {
-      const r = roomManager.getRoom(roomId);
-      if (r && applyPendingChips(r)) broadcastRoomState(r);
-      tryStartNextHand(roomId);
-    }, 6000);
+        const r = roomManager.getRoom(roomId);
+        if (r && applyPendingChips(r)) broadcastRoomState(r);
+        tryStartNextHand(roomId);
+      }, resultDelay2);
       return;
     }
     const deck = roomManager.getDeck(roomId);
