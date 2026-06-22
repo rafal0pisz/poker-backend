@@ -986,18 +986,31 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
 
     const omahaDescr = omahaWinners[0]?.hand?.descr ?? '?';
     const texasDescr = texasWinners[0]?.hand?.descr ?? '?';
+    const omahaNames = omahaWinners.map(w => w.player.nick).join('+');
+    const texasNames = texasWinners.map(w => w.player.nick).join('+');
     console.log(
       `[Drawmaha] Pot #${potIndex} (${pot.amount}): ` +
-      `Omaha → ${omahaWinners[0]?.player?.nick} (${omahaDescr}) +${omahaShare}  |  ` +
-      `Draw → ${texasWinners[0]?.player?.nick} (${texasDescr}) +${texasShare}`,
+      `Omaha → ${omahaNames} (${omahaDescr}) +${omahaShare}  |  ` +
+      `Draw → ${texasNames} (${texasDescr}) +${texasShare}`,
     );
 
     // Record main pot result for drawmahaResult (used for UI display)
     if (potIndex === 0) {
       mainPotOmahaWinner = omahaWinners[0] ?? null;
       mainPotTexasWinner = texasWinners[0] ?? null;
-      mainPotOmahaAmount = omahaShare;
-      mainPotTexasAmount = texasShare;
+      mainPotOmahaAmount = omahaPerWinner; // per-winner amount
+      mainPotTexasAmount = texasPerWinner;
+      // Store all tied winners for UI
+      (result as any)._drawmahaOmahaWinners = omahaWinners.map(w => ({
+        sessionToken: w.player.sessionToken,
+        amount: omahaPerWinner,
+        handDescription: w.hand.descr,
+      }));
+      (result as any)._drawmahaTexasWinners = texasWinners.map(w => ({
+        sessionToken: w.player.sessionToken,
+        amount: texasPerWinner,
+        handDescription: w.hand.descr,
+      }));
     }
   }
 
@@ -1020,7 +1033,13 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
         amount: mainPotTexasAmount,
         handDescription: texasDescr,
       },
+      // Include all tied winners for proper UI display
+      omahaWinners: (result as any)._drawmahaOmahaWinners ?? undefined,
+      texasWinners: (result as any)._drawmahaTexasWinners ?? undefined,
     };
+    // Clean up temp properties
+    delete (result as any)._drawmahaOmahaWinners;
+    delete (result as any)._drawmahaTexasWinners;
   }
 
   // Highlight the Omaha winner's 2+3 cards from the main pot
