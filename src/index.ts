@@ -1084,20 +1084,11 @@ io.on('connection', (socket) => {
     const player = room.players.find((p) => p.sessionToken === sessionToken);
     if (!player) return;
 
-    const isMyTurn = room.gameState?.currentPlayerSeat === player.seat && player.status === 'playing';
     const isInActiveHand = room.gameState && (player.status === 'playing' || player.status === 'all-in');
 
-    if (isMyTurn) {
-      // It's their turn — fold immediately and sit out
-      performAction(room, sessionToken, 'fold');
-      player.status = 'sitting-out';
-      broadcastRoomState(room);
-      progressGame(roomId);
-      emitSystemMessage(roomId, `${player.nick} is sitting out`);
-    } else if (isInActiveHand) {
-      // Mid-hand but not their turn — queue sit-out for next hand
-      player.pendingAction = 'fold'; // reuse pending slot as sit-out marker
-      // Actually use a dedicated flag
+    if (isInActiveHand) {
+      // Always queue — never fold mid-hand on sit-out request
+      // Player finishes current hand, then sits out before next hand starts
       (player as any).pendingSitOut = true;
       broadcastRoomState(room);
       emitSystemMessage(roomId, `${player.nick} will sit out after this hand`);
