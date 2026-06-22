@@ -749,6 +749,10 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
     winnings: [],
     showdownCards: [],
     winningCards: [],
+    boardCards: room.gameState.communityCards ?? [],
+    handNumber: room.gameState.handNumber,
+    totalPot: room.gameState.pot + room.gameState.sidePots.reduce((s, sp) => s + sp.amount, 0),
+    variant: room.gameState.variant,
   };
 
   // Helper: add chips to a player and record in winnings
@@ -1214,6 +1218,10 @@ export function finishHand(room: Room): HandResult {
     winnings: [],
     showdownCards: [],
     winningCards: [],
+    boardCards: room.gameState.communityCards ?? [],
+    handNumber: room.gameState.handNumber,
+    totalPot: room.gameState.pot + room.gameState.sidePots.reduce((s, sp) => s + sp.amount, 0),
+    variant: room.gameState.variant,
   };
 
   // Safety: if sidePots is still empty after collectBets (e.g. all currentBets were 0

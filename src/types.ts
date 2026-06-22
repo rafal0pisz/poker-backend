@@ -77,6 +77,10 @@ export interface HandResult {
   showdownCards: { sessionToken: string; cards: Card[]; handName: string }[];
   // The cards that formed the winning hand (5 cards). Used to highlight on the UI.
   winningCards: Card[];
+  boardCards?: Card[];
+  handNumber?: number;
+  totalPot?: number;
+  variant?: string;
   // Drawmaha split pot result (optional)
   drawmahaResult?: {
     omahaWinner: { sessionToken: string; amount: number; handDescription: string };
