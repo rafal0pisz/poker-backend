@@ -1110,7 +1110,12 @@ io.on('connection', (socket) => {
     if (!room) return;
     const player = room.players.find((p) => p.sessionToken === sessionToken);
     if (!player) return;
-    if (player.status === 'sitting-out') {
+    if ((player as any).pendingSitOut) {
+      // Cancel pending sit-out (player is still in the hand)
+      (player as any).pendingSitOut = false;
+      broadcastRoomState(room);
+      emitSystemMessage(roomId, `${player.nick} cancelled sit-out`);
+    } else if (player.status === 'sitting-out') {
       player.status = player.chips > 0 ? 'waiting' : 'no-chips';
       broadcastRoomState(room);
       emitSystemMessage(roomId, `${player.nick} is back`);
