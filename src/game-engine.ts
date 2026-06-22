@@ -1202,6 +1202,16 @@ export function advancePhase(room: Room, deck: Card[]): void {
 
 export function nextPlayer(room: Room): void {
   if (!room.gameState || room.gameState.currentPlayerSeat === null) return;
+  // If no 'playing' players remain (all all-in or folded), clear current seat
+  // so progressGame can detect runout instead of looping back to an all-in player
+  const playingSeats = room.players
+    .filter((p) => p.status === 'playing')
+    .map((p) => p.seat);
+  if (playingSeats.length === 0) {
+    room.gameState.currentPlayerSeat = null;
+    room.gameState.actionDeadline = null;
+    return;
+  }
   const next = getNextActiveSeat(room, room.gameState.currentPlayerSeat, false);
   room.gameState.currentPlayerSeat = next;
   room.gameState.actionDeadline = Date.now() + room.settings.actionTimeoutSec * 1000;
