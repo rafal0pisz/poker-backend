@@ -389,7 +389,7 @@ class RoomManager {
       players: room.players.map((p) => {
         // The player always sees their own cards
         if (p.sessionToken === sessionToken) {
-          return { ...p };
+          return { ...p, pendingSitOut: (p as any).pendingSitOut ?? false };
         }
 
         // Check if we should show this player's cards (via all-in reveal OR showdown)
