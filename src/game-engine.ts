@@ -101,6 +101,43 @@ export function refillDeckFromMuck(room: Room, deck: Card[]): number {
 }
 
 /**
+/**
+ * Texas Hold'em: finds the best 5-card hand from 7 cards (2 hole + 5 board).
+ * Returns the hand AND the exact 5 winning cards.
+ *
+ * We cannot rely on hand.cards from pokersolver because it returns ALL same-suit
+ * cards when a flush is present (e.g., 6 or 7 hearts → hand.cards.length = 6 or 7).
+ * Enumerating C(7,5) = 21 combinations is cheap and always returns exactly 5 cards.
+ */
+export function solveTexas(
+  holeCards: Card[],
+  boardCards: Card[],
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+): { hand: any; winningCards: Card[] } {
+  const allCards = [...holeCards, ...boardCards];
+  const fiveCombos = combinations(allCards, 5);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let bestHand: any = null;
+  let bestCombo: Card[] = [];
+
+  for (const combo of fiveCombos) {
+    const hand = Hand.solve(combo);
+    if (!bestHand) {
+      bestHand = hand;
+      bestCombo = combo;
+    } else {
+      const winners = Hand.winners([bestHand, hand]);
+      if (winners.includes(hand) && !winners.includes(bestHand)) {
+        bestHand = hand;
+        bestCombo = combo;
+      }
+    }
+  }
+
+  return { hand: bestHand!, winningCards: bestCombo };
+}
+
  * Crazy Pineapple: 3 hole cards, must use EXACTLY 1 or 2 from hand (not all 3).
  * Best 5-card hand from any combo of 1-2 hole + 3-4 board cards.
  * This is stricter than Texas (which can use 0-5 hole cards freely).
@@ -1312,9 +1349,12 @@ export function finishHand(room: Room): HandResult {
         return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };
       }
 
-      // Texas Hold'em / Drawmaha: free choice of any hole+board cards
-      const hand = Hand.solve([...holeCards, ...board]);
-      return { hand };
+      // Texas Hold'em / Drawmaha: use solveTexas to enumerate all C(7,5) combos.
+      // Hand.solve([...all 7 cards]) works for hand evaluation but hand.cards returns
+      // ALL same-suit cards when 6-7 are the same suit (pokersolver flush bug).
+      // solveTexas always returns exactly 5 winning cards.
+      const { hand, winningCards } = solveTexas(holeCards, board);
+      return { hand, winningHoleCards: winningCards, winningBoardCards: [] };
     };
 
     const evaluations = new Map<string, ReturnType<typeof evaluateHand>>();
@@ -1363,21 +1403,13 @@ export function finishHand(room: Room): HandResult {
       if (potIndex === 0 && winners.length > 0 && result.winningCards.length === 0) {
         const firstWinnerToken = winningSessionTokens[0];
         const winnerEval = evaluations.get(firstWinnerToken);
-
-        if (winnerEval?.winningHoleCards && winnerEval?.winningBoardCards) {
+        // All variants (Texas via solveTexas, Omaha via solveOmaha, Pineapple via solvePineapple)
+        // now always return winningHoleCards. winningBoardCards is [] for Texas.
+        if (winnerEval?.winningHoleCards) {
           result.winningCards = [
             ...winnerEval.winningHoleCards,
-            ...winnerEval.winningBoardCards,
+            ...(winnerEval.winningBoardCards ?? []),
           ];
-        } else {
-          const firstWinnerHand = winners[0] as {
-            cards?: Array<{ value: string; suit: string } | string>;
-          };
-          if (firstWinnerHand?.cards) {
-            result.winningCards = firstWinnerHand.cards
-              .map((c) => (typeof c === 'string' ? c : `${c.value}${c.suit}`))
-              .filter((c): c is Card => typeof c === 'string' && c.length === 2);
-          }
         }
       }
 
