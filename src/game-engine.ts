@@ -138,6 +138,7 @@ export function solveTexas(
   return { hand: bestHand!, winningCards: bestCombo };
 }
 
+/**
  * Crazy Pineapple: 3 hole cards, must use EXACTLY 1 or 2 from hand (not all 3).
  * Best 5-card hand from any combo of 1-2 hole + 3-4 board cards.
  * This is stricter than Texas (which can use 0-5 hole cards freely).
