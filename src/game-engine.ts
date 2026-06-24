@@ -1690,7 +1690,7 @@ export function finishHand(room: Room): HandResult {
       const holeCards = player.holeCards || [];
       const board = room.gameState!.communityCards;
 
-      if (variant === 'omaha' || variant === 'omaha-pl' || variant === 'omaha5' || variant === 'omaha-hl') {
+      if (variant === 'omaha' || variant === 'omaha-pl' || variant === 'omaha5') {
         const { hand, holeUsed, boardUsed } = solveOmaha(holeCards, board);
         return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };
       }
