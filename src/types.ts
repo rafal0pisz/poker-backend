@@ -7,7 +7,7 @@ export type PlayerRole = 'player' | 'vice-admin' | 'admin';
 // Texas:    2 hole cards + 5 community, best 5 of 7
 // Omaha:    4 hole cards + 5 community, must use EXACTLY 2 hole + 3 community
 // Drawmaha: 5 hole cards + draw phase after flop + 1-card reveal + split pot (Omaha half + Texas half)
-export type GameVariant = 'texas' | 'omaha' | 'omaha-pl' | 'drawmaha' | 'drawmaha-pl' | 'pineapple' | 'pineapple-classic';
+export type GameVariant = 'texas' | 'omaha' | 'omaha-pl' | 'omaha5' | 'omaha-hl' | 'drawmaha' | 'drawmaha-pl' | 'pineapple' | 'pineapple-classic';
 
 export type PlayerStatus =
   | 'playing'
@@ -89,6 +89,12 @@ export interface HandResult {
     omahaWinners?: { sessionToken: string; amount: number; handDescription: string }[];
     texasWinners?: { sessionToken: string; amount: number; handDescription: string }[];
   };
+  // Omaha Hi-Lo result (high + low split)
+  omahaHlResult?: {
+    highWinners: { sessionToken: string; amount: number; handDescription: string }[];
+    lowWinners: { sessionToken: string; amount: number; handDescription: string }[] | null;
+    noLow: boolean; // true = no qualifying low hand → high wins whole pot
+  };
   // Per-pot breakdown — lets the UI show "Main pot: X +100, Side pot 1: Y +50" etc.
   // Empty if there was only one pot (main pot, no side pots).
   // For each pot in order: main pot first, then side pots in creation order.
@@ -108,6 +114,8 @@ export interface PotWinBreakdown {
     // For Drawmaha: which half (Omaha or Draw) this player won
     // Undefined for Texas/Omaha/other variants
     drawmahaHalf?: 'omaha' | 'draw';
+    // For Omaha Hi-Lo: which half (High or Low) this player won
+    hlHalf?: 'high' | 'low';
   }[];
 }
 

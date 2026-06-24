@@ -237,7 +237,11 @@ export function startNewHand(room: Room): { deck: Card[] } {
 
   // Number of hole cards based on variant
   // Texas: 2, Omaha: 4, Drawmaha: 5
-  const cardsPerPlayer = (variant === 'omaha' || variant === 'omaha-pl') ? 4 : (variant === 'drawmaha' || variant === 'drawmaha-pl') ? 5 : (variant === 'pineapple' || variant === 'pineapple-classic') ? 3 : 2;
+  const cardsPerPlayer = (variant === 'omaha' || variant === 'omaha-pl' || variant === 'omaha-hl') ? 4
+    : (variant === 'omaha5') ? 5
+    : (variant === 'drawmaha' || variant === 'drawmaha-pl') ? 5
+    : (variant === 'pineapple' || variant === 'pineapple-classic') ? 3
+    : 2;
 
   const deck = shuffledDeck();
   for (const player of activePlayers) {
@@ -774,6 +778,348 @@ export function isRevealPhaseComplete(room: Room): boolean {
  * Odd chip goes to Omaha winner.
  * If one player wins both halves, they scoop.
  */
+// ─────────────────────────────────────────────────────────────────────────────
+// Omaha Hi-Lo helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Returns card rank for low-hand evaluation: A=1, 2-8 as face value, 9+=9+ */
+function lowCardRank(card: Card): number {
+  const val = card.slice(0, -1);
+  if (val === 'A') return 1;
+  if (val === 'T') return 10;
+  if (val === 'J') return 11;
+  if (val === 'Q') return 12;
+  if (val === 'K') return 13;
+  return parseInt(val, 10);
+}
+
+/**
+ * Returns true when low hand `a` is better (lower) than `b`.
+ * Both arrays are sorted descending (highest card first) — lower is better.
+ */
+function isLowBetter(a: number[], b: number[]): boolean {
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] < b[i]) return true;
+    if (a[i] > b[i]) return false;
+  }
+  return false;
+}
+
+/** Human-readable description for a qualifying low hand, e.g. "A-2-3-4-5 low" */
+function describeLow(score: number[]): string {
+  const names: Record<number, string> = { 1: 'A', 2: '2', 3: '3', 4: '4', 5: '5', 6: '6', 7: '7', 8: '8' };
+  return [...score].reverse().map((r) => names[r] ?? String(r)).join('-') + ' low';
+}
+
+/**
+ * Omaha Hi-Lo low-hand evaluator.
+ * Uses exactly 2 hole cards + 3 board cards.
+ * Qualifies only when all 5 cards have rank ≤8 (A=1) and are 5 different ranks.
+ * Returns the best qualifying low hand, or null if none qualifies.
+ */
+export function solveOmahaLow(
+  holeCards: Card[],
+  boardCards: Card[],
+): { cards: Card[]; score: number[]; descr: string } | null {
+  if (holeCards.length < 2 || boardCards.length < 3) return null;
+
+  const holeCombos = combinations(holeCards, 2);
+  const boardCombos = combinations(boardCards, 3);
+
+  let best: { cards: Card[]; score: number[]; descr: string } | null = null;
+
+  for (const hc of holeCombos) {
+    for (const bc of boardCombos) {
+      const five = [...hc, ...bc];
+      const ranks = five.map(lowCardRank);
+
+      // Qualify: all ranks ≤8 AND all 5 different (no pairs)
+      if (!ranks.every((r) => r <= 8)) continue;
+      if (new Set(ranks).size !== 5) continue;
+
+      // Score: sort descending — lowest first card wins
+      const score = [...ranks].sort((a, b) => b - a);
+
+      if (!best || isLowBetter(score, best.score)) {
+        best = { cards: five, score, descr: describeLow(score) };
+      }
+    }
+  }
+
+  return best;
+}
+
+/**
+ * Omaha Hi-Lo (8-or-better) finisher.
+ * Splits each pot 50/50 between high winner (solveOmaha) and low winner (solveOmahaLow).
+ * - Odd chip goes to high winner.
+ * - If no qualifying low: high winner takes the whole pot.
+ * - Same player winning both high and low = scoop.
+ */
+export function finalizeOmahaHlHand(room: Room): HandResult {
+  if (!room.gameState) throw new Error('No game state');
+
+  collectBets(room);
+
+  const remaining = room.players.filter(
+    (p) => p.status === 'playing' || p.status === 'all-in',
+  );
+
+  const result: HandResult = {
+    winnings: [],
+    showdownCards: [],
+    winningCards: [],
+    boardCards: room.gameState.communityCards ?? [],
+    handNumber: room.gameState.handNumber,
+    totalPot: room.gameState.pot + room.gameState.sidePots.reduce((s, sp) => s + sp.amount, 0),
+    variant: room.gameState.variant,
+  };
+
+  const addWinnings = (player: Player, amount: number, desc?: string) => {
+    if (amount <= 0) return;
+    player.chips += amount;
+    const existing = result.winnings.find((w) => w.sessionToken === player.sessionToken);
+    if (existing) {
+      existing.amount += amount;
+    } else {
+      result.winnings.push({ sessionToken: player.sessionToken, amount, handDescription: desc });
+    }
+  };
+
+  const allPots: SidePot[] = room.gameState.sidePots.length > 0
+    ? [...room.gameState.sidePots]
+    : [{ amount: room.gameState.pot, eligiblePlayers: remaining.map((p) => p.sessionToken) }];
+
+  const totalPot = allPots.reduce((s, p) => s + p.amount, 0);
+  const board = room.gameState.communityCards;
+
+  console.log(`[OmahaHL] board=${board.length} cards, players=${remaining.length}, pots=${allPots.map((p) => p.amount).join('+')}`);
+
+  // ── Edge case: only one player left (everyone else folded) ──
+  if (remaining.length === 1) {
+    addWinnings(remaining[0], totalPot);
+    room.gameState.phase = 'showdown';
+    room.gameState.currentPlayerSeat = null;
+    room.gameState.actionDeadline = null;
+    room.gameState.lastHandResult = result;
+    room.gameState.pot = 0;
+    room.gameState.sidePots = [];
+    for (const p of room.players) p.holeCards = undefined;
+    result.playerStacks = room.players
+      .filter((p) => p.status !== 'spectator')
+      .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, chips: p.chips }));
+    return result;
+  }
+
+  if (board.length < 3) {
+    console.error('[OmahaHL] Board too short for evaluation:', board.length);
+    addWinnings(remaining[0], totalPot);
+    room.gameState.phase = 'showdown';
+    room.gameState.currentPlayerSeat = null;
+    room.gameState.actionDeadline = null;
+    room.gameState.lastHandResult = result;
+    room.gameState.pot = 0;
+    room.gameState.sidePots = [];
+    result.playerStacks = room.players
+      .filter((p) => p.status !== 'spectator')
+      .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, chips: p.chips }));
+    return result;
+  }
+
+  // ── Pre-evaluate high and low for all remaining players ──
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const highEvalMap = new Map<string, { hand: any; holeUsed: Card[]; boardUsed: Card[] }>();
+  const lowEvalMap = new Map<string, { cards: Card[]; score: number[]; descr: string } | null>();
+
+  for (const p of remaining) {
+    try {
+      const highResult = solveOmaha(p.holeCards ?? [], board);
+      highEvalMap.set(p.sessionToken, highResult);
+    } catch (err) {
+      console.error(`[OmahaHL] High eval failed for ${p.nick}:`, err);
+      throw err;
+    }
+    const lowResult = solveOmahaLow(p.holeCards ?? [], board);
+    lowEvalMap.set(p.sessionToken, lowResult);
+  }
+
+  // ── Showdown cards ──
+  for (const p of remaining) {
+    const hE = highEvalMap.get(p.sessionToken);
+    const lE = lowEvalMap.get(p.sessionToken);
+    result.showdownCards.push({
+      sessionToken: p.sessionToken,
+      cards: p.holeCards ?? [],
+      handName: `High: ${hE?.hand?.descr ?? '?'}${lE ? ` | Low: ${lE.descr}` : ' | No low'}`,
+    });
+  }
+
+  if (allPots.length > 1) result.potBreakdown = [];
+
+  // Track main-pot winners for omahaHlResult display
+  let mainHighWinners: { sessionToken: string; amount: number; handDescription: string }[] = [];
+  let mainLowWinners: { sessionToken: string; amount: number; handDescription: string }[] | null = null;
+  let mainNoLow = false;
+
+  // ── Process each pot ──
+  for (let potIndex = 0; potIndex < allPots.length; potIndex++) {
+    const pot = allPots[potIndex];
+    const eligible = remaining.filter((p) => pot.eligiblePlayers.includes(p.sessionToken));
+
+    if (pot.amount === 0) continue;
+
+    if (eligible.length === 0) {
+      if (potIndex + 1 < allPots.length) {
+        allPots[potIndex + 1] = { ...allPots[potIndex + 1], amount: allPots[potIndex + 1].amount + pot.amount };
+      } else {
+        const share = Math.floor(pot.amount / remaining.length);
+        const rem = pot.amount % remaining.length;
+        remaining.forEach((p, i) => addWinnings(p, share + (i === 0 ? rem : 0)));
+      }
+      continue;
+    }
+
+    if (eligible.length === 1) {
+      addWinnings(eligible[0], pot.amount);
+      if (result.potBreakdown) {
+        result.potBreakdown.push({
+          label: potIndex === 0 ? 'Main pot' : `Side pot ${potIndex}`,
+          amount: pot.amount,
+          winners: [{ sessionToken: eligible[0].sessionToken, amount: pot.amount }],
+        });
+      }
+      continue;
+    }
+
+    // ── High winner(s) ──
+    const highEligible = eligible.map((p) => ({ player: p, ...highEvalMap.get(p.sessionToken)! }));
+    const highWinnerHands = Hand.winners(highEligible.map((e) => e.hand));
+    const highWinners = highEligible.filter((e) => highWinnerHands.includes(e.hand));
+
+    // ── Low winner(s) — only among players with a qualifying low ──
+    const lowEligible = eligible
+      .map((p) => ({ player: p, low: lowEvalMap.get(p.sessionToken) }))
+      .filter((e) => e.low !== null) as { player: Player; low: NonNullable<ReturnType<typeof solveOmahaLow>> }[];
+
+    const hasQualifyingLow = lowEligible.length > 0;
+
+    // Find best low score among eligible players
+    const lowWinners = hasQualifyingLow ? (() => {
+      let bestScore = lowEligible[0].low.score;
+      for (const e of lowEligible) {
+        if (isLowBetter(e.low.score, bestScore)) bestScore = e.low.score;
+      }
+      return lowEligible.filter((e) =>
+        !isLowBetter(bestScore, e.low.score) && !isLowBetter(e.low.score, bestScore),
+      );
+    })() : [];
+
+    // ── Pot distribution ──
+    const potWinners: PotWinBreakdown['winners'] = [];
+
+    if (!hasQualifyingLow) {
+      // No qualifying low — high takes everything
+      const perWinner = Math.floor(pot.amount / highWinners.length);
+      const remainder = pot.amount % highWinners.length;
+      highWinners.forEach(({ player, hand }, i) => {
+        const share = perWinner + (i === 0 ? remainder : 0);
+        addWinnings(player, share, `High: ${hand.descr}`);
+        potWinners.push({ sessionToken: player.sessionToken, amount: share, handDescription: `High: ${hand.descr}`, hlHalf: 'high' });
+      });
+      console.log(`[OmahaHL] Pot #${potIndex} (${pot.amount}): No low — High → ${highWinners.map((w) => w.player.nick).join('+')} (${highWinners[0].hand.descr})`);
+
+      if (potIndex === 0) {
+        mainNoLow = true;
+        mainHighWinners = highWinners.map(({ player, hand }) => ({
+          sessionToken: player.sessionToken, amount: perWinner, handDescription: hand.descr,
+        }));
+        mainLowWinners = null;
+      }
+    } else {
+      // Split 50/50: odd chip to high
+      const halfPot = Math.floor(pot.amount / 2);
+      const highShare = halfPot + (pot.amount % 2); // odd chip → high
+      const lowShare = halfPot;
+
+      // Distribute high half
+      const highPerWinner = Math.floor(highShare / highWinners.length);
+      const highRem = highShare % highWinners.length;
+      highWinners.forEach(({ player, hand }, i) => {
+        const share = highPerWinner + (i === 0 ? highRem : 0);
+        addWinnings(player, share, `High: ${hand.descr}`);
+        potWinners.push({ sessionToken: player.sessionToken, amount: share, handDescription: `High: ${hand.descr}`, hlHalf: 'high' });
+      });
+
+      // Distribute low half
+      const lowPerWinner = Math.floor(lowShare / lowWinners.length);
+      const lowRem = lowShare % lowWinners.length;
+      lowWinners.forEach(({ player, low }, i) => {
+        const share = lowPerWinner + (i === 0 ? lowRem : 0);
+        addWinnings(player, share, `Low: ${low.descr}`);
+        potWinners.push({ sessionToken: player.sessionToken, amount: share, handDescription: `Low: ${low.descr}`, hlHalf: 'low' });
+      });
+
+      console.log(
+        `[OmahaHL] Pot #${potIndex} (${pot.amount}): ` +
+        `High → ${highWinners.map((w) => w.player.nick).join('+')} (${highWinners[0].hand.descr}) +${highShare} | ` +
+        `Low → ${lowWinners.map((w) => w.player.nick).join('+')} (${lowWinners[0].low.descr}) +${lowShare}`,
+      );
+
+      if (potIndex === 0) {
+        mainNoLow = false;
+        mainHighWinners = highWinners.map(({ player, hand }) => ({
+          sessionToken: player.sessionToken, amount: highPerWinner, handDescription: hand.descr,
+        }));
+        mainLowWinners = lowWinners.map(({ player, low }) => ({
+          sessionToken: player.sessionToken, amount: lowPerWinner, handDescription: low.descr,
+        }));
+      }
+    }
+
+    if (result.potBreakdown) {
+      result.potBreakdown.push({
+        label: potIndex === 0 ? 'Main pot' : `Side pot ${potIndex}`,
+        amount: pot.amount,
+        winners: potWinners,
+      });
+    }
+  }
+
+  // ── omahaHlResult for UI ──
+  result.omahaHlResult = {
+    highWinners: mainHighWinners,
+    lowWinners: mainLowWinners,
+    noLow: mainNoLow,
+  };
+
+  // ── Set winningCards from main-pot high winner ──
+  if (mainHighWinners.length > 0) {
+    const hE = highEvalMap.get(mainHighWinners[0].sessionToken);
+    if (hE) result.winningCards = [...hE.holeUsed, ...hE.boardUsed];
+  }
+
+  // ── Finalize ──
+  // Calculate netAmount for each winner
+  for (const w of result.winnings) {
+    const player = room.players.find((p) => p.sessionToken === w.sessionToken);
+    if (player) w.netAmount = Math.max(0, w.amount - (player.totalBetInHand || 0));
+  }
+
+  room.gameState.phase = 'showdown';
+  room.gameState.currentPlayerSeat = null;
+  room.gameState.actionDeadline = null;
+  room.gameState.lastHandResult = result;
+  room.gameState.pot = 0;
+  room.gameState.sidePots = [];
+  for (const p of room.players) p.holeCards = undefined;
+
+  result.playerStacks = room.players
+    .filter((p) => p.status !== 'spectator')
+    .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, chips: p.chips }));
+
+  return result;
+}
+
 export function finalizeDrawmahaHand(room: Room): HandResult {
   if (!room.gameState) throw new Error('No game state');
 
@@ -1278,6 +1624,11 @@ export function finishHand(room: Room): HandResult {
     return finalizeDrawmahaHand(room);
   }
 
+  // Omaha Hi-Lo uses its own high/low split finisher
+  if (room.gameState.variant === 'omaha-hl') {
+    return finalizeOmahaHlHand(room);
+  }
+
   collectBets(room);
 
   const remaining = room.players.filter(
@@ -1339,7 +1690,7 @@ export function finishHand(room: Room): HandResult {
       const holeCards = player.holeCards || [];
       const board = room.gameState!.communityCards;
 
-      if (variant === 'omaha' || variant === 'omaha-pl') {
+      if (variant === 'omaha' || variant === 'omaha-pl' || variant === 'omaha5' || variant === 'omaha-hl') {
         const { hand, holeUsed, boardUsed } = solveOmaha(holeCards, board);
         return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };
       }

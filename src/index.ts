@@ -501,6 +501,32 @@ function describeHandResult(room: Room): string {
     );
   }
 
+  // Omaha Hi-Lo description
+  if (result.omahaHlResult) {
+    const { highWinners, lowWinners, noLow } = result.omahaHlResult;
+    const nick = (token: string) => room.players.find((p) => p.sessionToken === token)?.nick ?? '?';
+
+    if (noLow || !lowWinners) {
+      const names = highWinners.map((w) => nick(w.sessionToken)).join(' & ');
+      return `🏆 No qualifying low — ${names} wins (${highWinners[0]?.handDescription ?? ''})`;
+    }
+
+    // Check scoop: same player(s) in both high and low
+    const highTokens = new Set(highWinners.map((w) => w.sessionToken));
+    const lowTokens = new Set(lowWinners.map((w) => w.sessionToken));
+    const scoopTokens = [...highTokens].filter((t) => lowTokens.has(t));
+    if (scoopTokens.length === highTokens.size && scoopTokens.length === lowTokens.size) {
+      const names = scoopTokens.map(nick).join(' & ');
+      return `🎯 ${names} scooped (High: ${highWinners[0].handDescription} | Low: ${lowWinners[0].handDescription})`;
+    }
+
+    const highNames = highWinners.map((w) => nick(w.sessionToken)).join(' & ');
+    const lowNames = lowWinners.map((w) => nick(w.sessionToken)).join(' & ');
+    return (
+      `🃏 Hi-Lo split — High: ${highNames} (${highWinners[0].handDescription}) | Low: ${lowNames} (${lowWinners[0].handDescription})`
+    );
+  }
+
   const parts = result.winnings.map((w) => {
     const player = room.players.find((p) => p.sessionToken === w.sessionToken);
     const nick = player?.nick || '?';
@@ -1159,7 +1185,7 @@ io.on('connection', (socket) => {
     const player = room.players.find((p) => p.sessionToken === sessionToken);
     if (!player) return callback?.({ ok: false, error: 'Player not found' });
 
-    const allowed: GameVariant[] = ['texas', 'omaha', 'omaha-pl', 'drawmaha', 'drawmaha-pl', 'pineapple', 'pineapple-classic'];
+    const allowed: GameVariant[] = ['texas', 'omaha', 'omaha-pl', 'omaha5', 'omaha-hl', 'drawmaha', 'drawmaha-pl', 'pineapple', 'pineapple-classic'];
     if (!allowed.includes(payload.variant)) {
       return callback?.({ ok: false, error: 'Unknown variant' });
     }
@@ -1178,7 +1204,7 @@ io.on('connection', (socket) => {
       const nick = payload.nick?.trim();
       if (!nick || nick.length < 2) return callback({ ok: false, error: 'Nick too short' });
 
-      const botCount = Math.min(payload.botCount ?? 2, 4);
+      const botCount = Math.min(payload.botCount ?? 8, 8);
       const { room, sessionToken } = roomManager.createRoom(nick, {
         startingBuyIn: 1000,
         smallBlind: 5,
