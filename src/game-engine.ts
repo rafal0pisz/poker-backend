@@ -229,7 +229,11 @@ export function startNewHand(room: Room): { deck: Card[] } {
 
   const handNumber = (room.gameState?.handNumber ?? 0) + 1;
   const prevDealer = room.gameState?.dealerSeat ?? -1;
-  const dealerSeat = getNextActiveSeat(room, prevDealer, true);
+  // Dealer seat rotates through active (playing) players only.
+  // no-chips players (busted) are excluded — button skips them.
+  // At this point in startNewHand, no players have status 'all-in' (reset above),
+  // so false correctly finds only playing players.
+  const dealerSeat = getNextActiveSeat(room, prevDealer, false);
 
   // ===== DEALER'S CHOICE: variant comes from dealer's preference =====
   const dealerPlayer = room.players.find((p) => p.seat === dealerSeat);
@@ -1541,12 +1545,18 @@ export function advancePhase(room: Room, deck: Card[]): void {
 
     // Set first-to-act player and action deadline (same as standard streets)
     if (nextPhase !== 'showdown') {
-      const firstSeat = getNextActiveSeat(room, room.gameState.dealerSeat, false);
-      room.gameState.currentPlayerSeat = firstSeat;
-      room.gameState.actionDeadline = Date.now() + room.settings.actionTimeoutSec * 1000;
       const stillPlaying = room.players.filter((p) => p.status === 'playing');
-      if (stillPlaying.length <= 1) {
-        for (const p of stillPlaying) p.hasActedThisRound = true;
+      if (stillPlaying.length === 0) {
+        // All players are all-in — no one can bet. progressGame will handle runout.
+        room.gameState.currentPlayerSeat = null;
+        room.gameState.actionDeadline = null;
+      } else {
+        const firstSeat = getNextActiveSeat(room, room.gameState.dealerSeat, false);
+        room.gameState.currentPlayerSeat = firstSeat;
+        room.gameState.actionDeadline = Date.now() + room.settings.actionTimeoutSec * 1000;
+        if (stillPlaying.length === 1) {
+          stillPlaying[0].hasActedThisRound = true;
+        }
       }
     } else {
       room.gameState.currentPlayerSeat = null;
@@ -1582,14 +1592,18 @@ export function advancePhase(room: Room, deck: Card[]): void {
   }
 
   if (nextPhase !== 'showdown') {
-    const firstSeat = getNextActiveSeat(room, room.gameState.dealerSeat, false);
-    room.gameState.currentPlayerSeat = firstSeat;
-    room.gameState.actionDeadline =
-      Date.now() + room.settings.actionTimeoutSec * 1000;
-
     const stillPlaying = room.players.filter((p) => p.status === 'playing');
-    if (stillPlaying.length <= 1) {
-      for (const p of stillPlaying) p.hasActedThisRound = true;
+    if (stillPlaying.length === 0) {
+      // All players are all-in — no one can bet. progressGame will handle runout.
+      room.gameState.currentPlayerSeat = null;
+      room.gameState.actionDeadline = null;
+    } else {
+      const firstSeat = getNextActiveSeat(room, room.gameState.dealerSeat, false);
+      room.gameState.currentPlayerSeat = firstSeat;
+      room.gameState.actionDeadline = Date.now() + room.settings.actionTimeoutSec * 1000;
+      if (stillPlaying.length === 1) {
+        stillPlaying[0].hasActedThisRound = true;
+      }
     }
   } else {
     room.gameState.currentPlayerSeat = null;
