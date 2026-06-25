@@ -212,7 +212,9 @@ function scheduleActionTimer(roomId: string) {
     const player = r.players.find((p) => p.seat === currentPlayerSeat);
     if (!player || player.status !== 'playing') return;
 
-    const toCall = r.gameState.currentBet - player.currentBet;
+    // toCall can be negative if a smaller all-in happened after this player raised.
+    // In that case, the player already has more in the pot than needed — treat as check.
+    const toCall = Math.max(0, r.gameState.currentBet - player.currentBet);
 
     if (toCall === 0) {
       // No bet to face — auto-check
