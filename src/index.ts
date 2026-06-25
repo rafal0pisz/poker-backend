@@ -227,6 +227,9 @@ function updatePlayerStats(room: Room, result: import('./types.js').HandResult):
         bestHand: '',
         allInCount: 0,
         foldCount: 0,
+        showdownCount: 0,
+        showdownWins: 0,
+        biggestLoss: 0,
       };
     }
     const stats = room.playerStats[token];
@@ -262,6 +265,25 @@ function updatePlayerStats(room: Room, result: import('./types.js').HandResult):
       stats.biggestPot = w.amount;
       stats.biggestPotHand = w.handDescription ?? '';
     }
+  }
+
+  // Showdown tracking
+  const showdownTokens = new Set(result.showdownCards.map((sc) => sc.sessionToken));
+  const winnerTokens = new Set(result.winnings.map((w) => w.sessionToken));
+  for (const token of showdownTokens) {
+    const stats = room.playerStats[token];
+    if (!stats) continue;
+    stats.showdownCount++;
+    if (winnerTokens.has(token)) stats.showdownWins++;
+  }
+
+  // Biggest single-hand loss: how much a player bet minus what they won back
+  for (const player of activePlayers) {
+    const stats = room.playerStats[player.sessionToken];
+    if (!stats || player.totalBetInHand <= 0) continue;
+    const wonBack = result.winnings.find((w) => w.sessionToken === player.sessionToken)?.amount ?? 0;
+    const loss = player.totalBetInHand - wonBack;
+    if (loss > stats.biggestLoss) stats.biggestLoss = loss;
   }
 
   // Best hand from showdown

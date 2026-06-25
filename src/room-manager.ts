@@ -224,11 +224,21 @@ class RoomManager {
     }
 
     if (!room.players.some((p) => p.role === 'admin')) {
-      const viceAdmin = room.players.find((p) => p.role === 'vice-admin');
+      // Prefer vice-admin who is not a bot
+      const viceAdmin = room.players.find((p) => p.role === 'vice-admin' && !(p as any).isBot);
       if (viceAdmin) {
         viceAdmin.role = 'admin';
-      } else if (room.players.length > 0) {
-        room.players[0].role = 'admin';
+      } else {
+        // Transfer to the human chip leader (most chips among non-bot players)
+        const humanPlayers = room.players.filter((p) => !(p as any).isBot);
+        if (humanPlayers.length > 0) {
+          const chipLeader = humanPlayers.reduce((best, p) =>
+            (p.chips + (p.currentBet || 0)) > (best.chips + (best.currentBet || 0)) ? p : best,
+            humanPlayers[0]
+          );
+          chipLeader.role = 'admin';
+        }
+        // If only bots remain: no admin — room keeps running, bots play autonomously
       }
     }
 

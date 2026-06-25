@@ -202,6 +202,9 @@ export interface PlayerStats {
   bestHand: string;          // best hand description seen
   allInCount: number;        // times went all-in
   foldCount: number;         // times folded
+  showdownCount: number;     // times reached showdown
+  showdownWins: number;      // times won at showdown
+  biggestLoss: number;       // biggest single-hand chip loss
 }
 
 export interface SessionResult {
