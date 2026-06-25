@@ -677,7 +677,7 @@ function advanceRevealPhase(roomId: string) {
         broadcastRoomState(room);
       }
 
-      const delay = fullAllInRunout ? 1200 : 1500;
+      const delay = fullAllInRunout ? 3500 : 1500;
       setTimeout(() => progressGame(roomId), delay);
     }
     return;
@@ -851,7 +851,7 @@ function progressGame(roomId: string) {
         broadcastRoomState(room);
       }
 
-      const delay = fullAllInRunout ? 1200 : 1500;
+      const delay = fullAllInRunout ? 3500 : 1500;
       setTimeout(() => progressGame(roomId), delay);
     }
     return;
