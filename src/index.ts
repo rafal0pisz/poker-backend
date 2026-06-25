@@ -1299,9 +1299,11 @@ io.on('connection', (socket) => {
       socket.data.roomId = room.id;
       socket.join(room.id);
 
-      // Add bots
+      // Add bots — track used nicks to prevent duplicates
+      const usedBotNicks: string[] = [];
       for (let i = 0; i < botCount; i++) {
-        const botNick = getBotNick();
+        const botNick = getBotNick(usedBotNicks);
+        usedBotNicks.push(botNick);
         roomManager.createBotPlayer(room.id, botNick, 1000);
       }
 

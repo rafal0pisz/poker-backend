@@ -7,8 +7,10 @@ export const BOT_NAMES = [
   'Dagger', 'Ember', 'Flux', 'Ghost', 'Hydra',
 ];
 
-export function getBotNick(): string {
-  const name = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)];
+export function getBotNick(usedNicks: string[] = []): string {
+  const available = BOT_NAMES.filter((n) => !usedNicks.includes(`Bot_${n}`));
+  const pool = available.length > 0 ? available : BOT_NAMES;
+  const name = pool[Math.floor(Math.random() * pool.length)];
   return `Bot_${name}`;
 }
 
