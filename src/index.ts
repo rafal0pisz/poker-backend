@@ -454,6 +454,22 @@ function applyPendingChips(room: Room) {
   return applied;
 }
 
+// Debounce timers for broadcastRoomState during draw phase.
+// Multiple players submitting draws simultaneously → batch into one broadcast.
+const broadcastDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function broadcastRoomStateDebounced(room: Room, delayMs = 60) {
+  const roomId = room.id;
+  const existing = broadcastDebounceTimers.get(roomId);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => {
+    broadcastDebounceTimers.delete(roomId);
+    const r = roomManager.getRoom(roomId);
+    if (r) broadcastRoomState(r);
+  }, delayMs);
+  broadcastDebounceTimers.set(roomId, timer);
+}
+
 function broadcastRoomState(room: Room) {
   // Schedule bot action if it's a bot's turn
   scheduleBotAction(room.id);
@@ -1120,7 +1136,9 @@ io.on('connection', (socket) => {
     }
 
     callback?.({ ok: true });
-    broadcastRoomState(room);
+    // Debounced — multiple players submitting draws simultaneously
+    // get batched into one broadcast (reduces 6 → 1 re-render on clients)
+    broadcastRoomStateDebounced(room);
 
     // Check if all players have drawn
     progressGame(roomId);
