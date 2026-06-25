@@ -127,6 +127,42 @@ function scheduleBotAction(roomId: string) {
   botTimers.set(roomId, timer);
 }
 
+/**
+ * Schedules bot draw submissions for the draw phase.
+ * Without this, bots wait the full drawSubmitDeadline (30s) before auto-stand-pat.
+ * Each bot submits after a short staggered delay (1-3s).
+ */
+function scheduleBotDrawSubmissions(roomId: string) {
+  const room = roomManager.getRoom(roomId);
+  if (!room?.gameState?.drawState) return;
+
+  const bots = room.players.filter(
+    (p) =>
+      (p as any).isBot &&
+      room.gameState!.drawState!.playerStates[p.sessionToken] &&
+      !room.gameState!.drawState!.playerStates[p.sessionToken].hasDrawn,
+  );
+
+  bots.forEach((bot, i) => {
+    const delay = 800 + i * 400 + Math.floor(Math.random() * 400);
+    setTimeout(() => {
+      const r = roomManager.getRoom(roomId);
+      if (!r?.gameState?.drawState) return;
+      const ps = r.gameState.drawState.playerStates[bot.sessionToken];
+      if (!ps || ps.hasDrawn) return;
+
+      const deck = roomManager.getDeck(roomId);
+      if (!deck) return;
+
+      // Bot always exchanges 1 card (index 0 = first hole card)
+      // Simple but effective — all Drawmaha bots draw 1
+      performDrawDiscard(r, bot.sessionToken, [0], deck);
+      broadcastRoomState(r);
+      withRoomLock(roomId, () => progressGame(roomId));
+    }, delay);
+  });
+}
+
 // Per-room processing queue — prevents concurrent progressGame calls
 // that could corrupt game state (action timer fires same time as player action)
 const roomProcessing = new Map<string, boolean>();
@@ -631,9 +667,14 @@ function advanceRevealPhase(roomId: string) {
     return;
   }
 
-  // Set current deciding seat + 15s deadline
+  const isBot = (nextPlayer as any).isBot;
+  const decideTimeout = isBot
+    ? 1500 + Math.floor(Math.random() * 1000)  // bots: 1.5-2.5s
+    : 15000;                                    // humans: 15s
+
+  // Set current deciding seat + deadline
   room.gameState.drawState.currentDecidingSeat = nextPlayer.seat;
-  room.gameState.drawState.decideDeadline = Date.now() + 15000;
+  room.gameState.drawState.decideDeadline = Date.now() + decideTimeout;
   broadcastRoomState(room);
 
   // Emit open card to everyone (table can see it)
@@ -645,9 +686,9 @@ function advanceRevealPhase(roomId: string) {
     });
   }
 
-  console.log(`[Drawmaha] ${nextPlayer.nick} has 15s to decide on open card`);
+  console.log(`[Drawmaha] ${nextPlayer.nick} has ${decideTimeout / 1000}s to decide on open card${isBot ? ' (bot)' : ''}`);
 
-  // Auto-reject after 15 seconds
+  // Auto-reject after timeout (bots: fast, humans: 15s)
   const timer = setTimeout(() => {
     const r = roomManager.getRoom(roomId);
     if (!r || !r.gameState?.drawState) return;
@@ -656,10 +697,10 @@ function advanceRevealPhase(roomId: string) {
       console.log(`[Drawmaha] Auto-rejecting for ${nextPlayer.nick} (timeout)`);
       const autoRejectDeck = roomManager.getDeck(roomId);
       if (autoRejectDeck) performDrawDecide(r, nextPlayer.sessionToken, false, autoRejectDeck);
-      emitSystemMessage(roomId, `⏱ ${nextPlayer.nick} timed out — open card rejected, drew blind card`);
+      if (!isBot) emitSystemMessage(roomId, `⏱ ${nextPlayer.nick} timed out — open card rejected, drew blind card`);
       advanceRevealPhase(roomId);
     }
-  }, 15000);
+  }, decideTimeout);
 
   drawDecideTimers.set(roomId, timer);
 }
@@ -743,6 +784,7 @@ function progressGame(roomId: string) {
     const phaseAfterAdvance: string = room.gameState.phase;
     if (phaseAfterAdvance === 'draw') {
       scheduleDrawSubmitTimer(roomId); // auto stand-pat timer for draw phase
+      scheduleBotDrawSubmissions(roomId); // bots submit draws quickly (1-3s)
       return;
     }
     if (phaseAfterAdvance === 'pineapple-discard') {
