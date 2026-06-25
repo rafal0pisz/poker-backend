@@ -1546,17 +1546,20 @@ export function advancePhase(room: Room, deck: Card[]): void {
     // Set first-to-act player and action deadline (same as standard streets)
     if (nextPhase !== 'showdown') {
       const stillPlaying = room.players.filter((p) => p.status === 'playing');
+      const stillAllIn = room.players.filter((p) => p.status === 'all-in').length;
       if (stillPlaying.length === 0) {
-        // All players are all-in — no one can bet. progressGame will handle runout.
+        // Full all-in runout — no one can bet. progressGame will handle runout.
+        room.gameState.currentPlayerSeat = null;
+        room.gameState.actionDeadline = null;
+      } else if (stillPlaying.length === 1 && stillAllIn >= 1) {
+        // Last-man runout: one player vs all-in opponents — auto-check, no action needed.
+        stillPlaying[0].hasActedThisRound = true;
         room.gameState.currentPlayerSeat = null;
         room.gameState.actionDeadline = null;
       } else {
         const firstSeat = getNextActiveSeat(room, room.gameState.dealerSeat, false);
         room.gameState.currentPlayerSeat = firstSeat;
         room.gameState.actionDeadline = Date.now() + room.settings.actionTimeoutSec * 1000;
-        if (stillPlaying.length === 1) {
-          stillPlaying[0].hasActedThisRound = true;
-        }
       }
     } else {
       room.gameState.currentPlayerSeat = null;
@@ -1593,17 +1596,20 @@ export function advancePhase(room: Room, deck: Card[]): void {
 
   if (nextPhase !== 'showdown') {
     const stillPlaying = room.players.filter((p) => p.status === 'playing');
+    const stillAllIn = room.players.filter((p) => p.status === 'all-in').length;
     if (stillPlaying.length === 0) {
-      // All players are all-in — no one can bet. progressGame will handle runout.
+      // Full all-in runout — no one can bet. progressGame will handle runout.
+      room.gameState.currentPlayerSeat = null;
+      room.gameState.actionDeadline = null;
+    } else if (stillPlaying.length === 1 && stillAllIn >= 1) {
+      // Last-man runout: one player vs all-in opponents — auto-check, no action needed.
+      stillPlaying[0].hasActedThisRound = true;
       room.gameState.currentPlayerSeat = null;
       room.gameState.actionDeadline = null;
     } else {
       const firstSeat = getNextActiveSeat(room, room.gameState.dealerSeat, false);
       room.gameState.currentPlayerSeat = firstSeat;
       room.gameState.actionDeadline = Date.now() + room.settings.actionTimeoutSec * 1000;
-      if (stillPlaying.length === 1) {
-        stillPlaying[0].hasActedThisRound = true;
-      }
     }
   } else {
     room.gameState.currentPlayerSeat = null;
