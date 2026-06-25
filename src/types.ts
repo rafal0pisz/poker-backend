@@ -99,6 +99,8 @@ export interface HandResult {
   // Empty if there was only one pot (main pot, no side pots).
   // For each pot in order: main pot first, then side pots in creation order.
   potBreakdown?: PotWinBreakdown[];
+  // Players who reached 0 chips as a result of this hand (busted out)
+  eliminatedTokens?: string[];
 }
 
 export interface PotWinBreakdown {

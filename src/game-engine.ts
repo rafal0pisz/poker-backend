@@ -1109,6 +1109,15 @@ export function finalizeOmahaHlHand(room: Room): HandResult {
     if (player) w.netAmount = Math.max(0, w.amount - (player.totalBetInHand || 0));
   }
 
+  // Detect eliminated players (busted out — chips reached 0 in this hand)
+  result.eliminatedTokens = room.players
+    .filter((p) =>
+      p.chips === 0 &&
+      (p.status === 'playing' || p.status === 'all-in' || p.status === 'folded') &&
+      !result.winnings.some((w) => w.sessionToken === p.sessionToken),
+    )
+    .map((p) => p.sessionToken);
+
   room.gameState.phase = 'showdown';
   room.gameState.currentPlayerSeat = null;
   room.gameState.actionDeadline = null;
