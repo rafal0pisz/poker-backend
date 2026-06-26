@@ -1839,71 +1839,106 @@ io.on('connection', (socket) => {
 
     const graceTimer = setTimeout(() => {
       disconnectGraceTimers.delete(sessionToken);
-      const room = roomManager.getRoom(result.roomId);
-      if (!room) return;
 
-      const player = room.players.find((p) => p.sessionToken === sessionToken);
-      if (!player || player.connected) return; // reconnected during grace period
+      // Use withRoomLock so we never race against progressGame or action timer
+      withRoomLock(result.roomId, () => {
+        const room = roomManager.getRoom(result.roomId);
+        if (!room) return;
 
-      console.log(`[disconnect-grace] ${player.nick} did not reconnect in ${DISCONNECT_GRACE_MS}ms — folding`);
+        const player = room.players.find((p) => p.sessionToken === sessionToken);
+        if (!player || player.connected) return; // reconnected
 
-      // Now actually fold the player if they were active
-      if (room.gameState && player.status === 'playing') {
-        // Don't fold if player already acted this round (e.g. call sent just before disconnect)
-        if (player.hasActedThisRound) {
-          console.log(`[disconnect-grace] ${player.nick} already acted — NOT folding`);
+        console.log(`[disconnect-grace] ${player.nick} did not reconnect — folding`);
+
+        if (room.gameState && player.status === 'playing') {
+          if (player.hasActedThisRound) {
+            // Already acted this round — no fold needed, just advance if stuck
+            broadcastRoomState(room);
+            if (room.gameState.currentPlayerSeat === player.seat) {
+              // Somehow still current player after acting — force advance
+              advanceToNextAfterDisconnect(room, result.roomId);
+            }
+            return;
+          }
+          // Fold via proper action so state stays consistent
+          const res = performAction(room, player.sessionToken, 'fold');
+          if (res.ok) {
+            player.status = 'sitting-out'; // exclude from future hands
+          } else {
+            // performAction rejected — force advance anyway
+            player.status = 'sitting-out';
+          }
           broadcastRoomState(room);
-          return;
+          if (room.gameState.phase && room.gameState.phase !== 'showdown') {
+            progressGame(result.roomId);
+          }
+        } else if (room.gameState && player.status === 'all-in') {
+          // All-in — stays in hand, no action needed
+        } else if (!room.gameState) {
+          player.status = 'disconnected';
+          broadcastRoomState(room);
+        } else {
+          // Some other status (folded, sitting-out, etc.) — mark disconnected
+          if (player.status === 'playing') player.status = 'sitting-out';
+          broadcastRoomState(room);
         }
-        player.status = 'folded';
-        broadcastRoomState(room);
-        const phase = room.gameState.phase;
-        if (phase && phase !== 'showdown') {
-          progressGame(result.roomId);
-        }
-      } else if (room.gameState && player.status === 'all-in') {
-        // All-in players don't need to act — leave them in
-      } else if (!room.gameState) {
-        // No game running — just mark as disconnected
-        player.status = 'disconnected';
-        broadcastRoomState(room);
-      }
+      });
     }, DISCONNECT_GRACE_MS);
 
     disconnectGraceTimers.set(sessionToken, graceTimer);
-
-    // ── Fast-fold when disconnected on your turn ──────────────────────────
-    // If it's this player's turn right now, other players would wait the full
-    // DISCONNECT_GRACE_MS (30s) + action timer (30s) = up to 60s freeze.
-    // Instead: give 5s for iOS PWA reconnects, then fold them immediately.
-    const roomNow = roomManager.getRoom(result.roomId);
-    const playerNow = roomNow?.players.find((p) => p.sessionToken === sessionToken);
-    if (
-      roomNow?.gameState &&
-      playerNow?.status === 'playing' &&
-      roomNow.gameState.currentPlayerSeat === playerNow.seat
-    ) {
-      setTimeout(() => {
-        const r = roomManager.getRoom(result.roomId);
-        if (!r?.gameState) return;
-        const p = r.players.find((pp) => pp.sessionToken === sessionToken);
-        if (!p || p.connected) return; // reconnected — do nothing
-        if (r.gameState.currentPlayerSeat !== p.seat) return; // already advanced
-        if (p.status !== 'playing') return; // already folded by action timer
-
-        console.log(`[disconnect-turn] ${p.nick} disconnected on their turn — fast-folding`);
-        performAction(r, p.sessionToken, 'fold');
-        p.status = 'sitting-out'; // don't block future hands
-        broadcastRoomState(r);
-        progressGame(result.roomId);
-      }, 5_000); // 5s grace for iOS PWA reconnects
-    }
   });
 });
+
+/**
+ * Force-advance the game when the current player can't act (disconnected / sitting-out).
+ * Called from grace timer and watchdog.
+ */
+function advanceToNextAfterDisconnect(room: Room, roomId: string): void {
+  if (!room.gameState) return;
+  const p = room.players.find(pp => pp.seat === room.gameState!.currentPlayerSeat);
+  if (!p) return;
+  if (p.status === 'playing') {
+    // Try a proper fold first
+    const res = performAction(room, p.sessionToken, 'fold');
+    if (!res.ok) {
+      // Force-fold manually as fallback
+      p.status = 'folded';
+    }
+  }
+  progressGame(roomId);
+}
+
+// ── Watchdog: every 15s check for rooms stuck waiting on a disconnected player ──
+setInterval(() => {
+  for (const [roomId, room] of (roomManager as any).rooms as Map<string, Room>) {
+    if (!room.gameState) continue;
+    const { currentPlayerSeat, actionDeadline } = room.gameState;
+    if (!currentPlayerSeat) continue;
+
+    const current = room.players.find(p => p.seat === currentPlayerSeat);
+    if (!current) continue;
+
+    const isStuck =
+      current.status !== 'playing' || // folded/sitting-out/disconnected set as current player
+      (!current.connected && actionDeadline && Date.now() > actionDeadline + 5000); // deadline passed + disconnected
+
+    if (isStuck) {
+      console.log(`[watchdog] Room ${roomId}: stuck on ${current.nick} (status=${current.status}, connected=${current.connected}) — forcing advance`);
+      withRoomLock(roomId, () => {
+        const r = roomManager.getRoom(roomId);
+        if (!r?.gameState) return;
+        const p = r.players.find(pp => pp.seat === r.gameState!.currentPlayerSeat);
+        if (!p) return;
+        // Only advance if still the same stuck player
+        if (p.sessionToken !== current.sessionToken) return;
+        advanceToNextAfterDisconnect(r, roomId);
+        broadcastRoomState(r);
+      });
+    }
+  }
+}, 15_000);
 
 httpServer.listen(PORT, () => {
   console.log(`🎰 Poker backend running on http://localhost:${PORT}`);
   console.log(`📡 Accepting connections from: ${FRONTEND_URL}`);
 });
-
-
