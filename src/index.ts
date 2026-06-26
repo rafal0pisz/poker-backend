@@ -1871,6 +1871,33 @@ io.on('connection', (socket) => {
     }, DISCONNECT_GRACE_MS);
 
     disconnectGraceTimers.set(sessionToken, graceTimer);
+
+    // ── Fast-fold when disconnected on your turn ──────────────────────────
+    // If it's this player's turn right now, other players would wait the full
+    // DISCONNECT_GRACE_MS (30s) + action timer (30s) = up to 60s freeze.
+    // Instead: give 5s for iOS PWA reconnects, then fold them immediately.
+    const roomNow = roomManager.getRoom(result.roomId);
+    const playerNow = roomNow?.players.find((p) => p.sessionToken === sessionToken);
+    if (
+      roomNow?.gameState &&
+      playerNow?.status === 'playing' &&
+      roomNow.gameState.currentPlayerSeat === playerNow.seat
+    ) {
+      setTimeout(() => {
+        const r = roomManager.getRoom(result.roomId);
+        if (!r?.gameState) return;
+        const p = r.players.find((pp) => pp.sessionToken === sessionToken);
+        if (!p || p.connected) return; // reconnected — do nothing
+        if (r.gameState.currentPlayerSeat !== p.seat) return; // already advanced
+        if (p.status !== 'playing') return; // already folded by action timer
+
+        console.log(`[disconnect-turn] ${p.nick} disconnected on their turn — fast-folding`);
+        performAction(r, p.sessionToken, 'fold');
+        p.status = 'sitting-out'; // don't block future hands
+        broadcastRoomState(r);
+        progressGame(result.roomId);
+      }, 5_000); // 5s grace for iOS PWA reconnects
+    }
   });
 });
 
