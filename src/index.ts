@@ -1920,7 +1920,7 @@ setInterval(() => {
 
     const isStuck =
       current.status !== 'playing' || // folded/sitting-out/disconnected set as current player
-      (!current.connected && actionDeadline && Date.now() > actionDeadline + 5000); // deadline passed + disconnected
+      (!current.connected && actionDeadline && Date.now() > actionDeadline + 20_000); // deadline passed 20s ago + still disconnected
 
     if (isStuck) {
       console.log(`[watchdog] Room ${roomId}: stuck on ${current.nick} (status=${current.status}, connected=${current.connected}) — forcing advance`);
