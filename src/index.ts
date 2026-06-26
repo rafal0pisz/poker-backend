@@ -88,6 +88,16 @@ setInterval(() => {
 // Bot action timers
 const botTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+// Generation counter per room — incremented on every force-reset.
+// Any setTimeout that captured an old generation is a no-op when it fires.
+const roomGeneration = new Map<string, number>();
+function getRoomGen(roomId: string): number { return roomGeneration.get(roomId) ?? 0; }
+function bumpRoomGen(roomId: string): number {
+  const g = getRoomGen(roomId) + 1;
+  roomGeneration.set(roomId, g);
+  return g;
+}
+
 function scheduleBotAction(roomId: string) {
   if (botTimers.has(roomId)) return; // already scheduled
   const room = roomManager.getRoom(roomId);
@@ -680,7 +690,8 @@ function advanceRevealPhase(roomId: string) {
       }
 
       const delay = fullAllInRunout ? 3500 : 1500;
-      setTimeout(() => progressGame(roomId), delay);
+      const _gen = getRoomGen(roomId);
+      setTimeout(() => { if (getRoomGen(roomId) === _gen) progressGame(roomId); }, delay);
     }
     return;
   }
@@ -854,7 +865,8 @@ function progressGame(roomId: string) {
       }
 
       const delay = fullAllInRunout ? 3500 : 1500;
-      setTimeout(() => progressGame(roomId), delay);
+      const _gen = getRoomGen(roomId);
+      setTimeout(() => { if (getRoomGen(roomId) === _gen) progressGame(roomId); }, delay);
     }
     return;
   }
@@ -1389,73 +1401,83 @@ io.on('connection', (socket) => {
     const isAdm = room.players.some((p) => p.sessionToken === sessionToken && p.role === 'admin');
     if (!isAdm) return callback({ ok: false, error: 'Not admin' });
 
-    // Clear all pending timers
+    // ── Bump generation: invalidates ALL stale runout/progressGame timers ──
+    bumpRoomGen(roomId);
+
+    // ── Clear every timer type ──
     clearActionTimer(roomId);
     clearDrawSubmitTimer(roomId);
     const decideTimer = drawDecideTimers.get(roomId);
     if (decideTimer) { clearTimeout(decideTimer); drawDecideTimers.delete(roomId); }
+    const botTimer = botTimers.get(roomId);
+    if (botTimer) { clearTimeout(botTimer); botTimers.delete(roomId); }
 
-    if (room.gameState) {
-      // Return exactly what each player invested this hand.
-      // handContribution tracks every chip taken from each player across all streets.
-      // It already includes currentBet (incremented at bet-time, before collectBets).
-      // So we ONLY return handContribution — not currentBet separately (double count!)
-      // and NOT the pot separately (pot was built FROM handContributions — double count!)
-      const totalHandContributions = room.players.reduce(
-        (s, p) => s + (p.handContribution || 0), 0
-      );
+    // ── Atomic reset inside withRoomLock ──
+    withRoomLock(roomId, () => {
+      const r = roomManager.getRoom(roomId);
+      if (!r) return;
 
-      if (totalHandContributions > 0) {
-        // Normal case: tracking is active, return exactly what each player put in
-        for (const p of room.players) {
-          p.chips += (p.handContribution || 0);
-          p.currentBet = 0;
-          p.handContribution = 0;
-        }
-      } else {
-        // Fallback: first hand after deploy (no tracking yet) — equal split of pot
-        for (const p of room.players) {
-          p.currentBet = 0;
-          p.handContribution = 0;
-        }
-        const totalPot =
-          room.gameState.pot +
-          room.gameState.sidePots.reduce((s, sp) => s + sp.amount, 0);
-        if (totalPot > 0) {
-          const seated = room.players.filter((p) => p.status !== 'spectator');
-          if (seated.length > 0) {
-            const share = Math.floor(totalPot / seated.length);
-            const rem = totalPot % seated.length;
-            seated.forEach((p, i) => { p.chips += share + (i === 0 ? rem : 0); });
+      if (r.gameState) {
+        // Return chips based on handContribution tracking
+        const totalHandContributions = r.players.reduce(
+          (s, p) => s + (p.handContribution || 0), 0,
+        );
+
+        if (totalHandContributions > 0) {
+          for (const p of r.players) {
+            p.chips += (p.handContribution || 0);
+            p.currentBet = 0;
+            p.handContribution = 0;
+          }
+        } else {
+          // Fallback: return pot+sidePots equally
+          for (const p of r.players) {
+            p.currentBet = 0;
+            p.handContribution = 0;
+          }
+          const totalPot =
+            r.gameState.pot +
+            r.gameState.sidePots.reduce((s, sp) => s + sp.amount, 0);
+          if (totalPot > 0) {
+            const seated = r.players.filter((p) => p.status !== 'spectator');
+            if (seated.length > 0) {
+              const share = Math.floor(totalPot / seated.length);
+              const rem = totalPot % seated.length;
+              seated.forEach((p, i) => { p.chips += share + (i === 0 ? rem : 0); });
+            }
           }
         }
-      }
 
-      // Step 3: Reset all player statuses to 'waiting' (not sitting-out)
-      for (const p of room.players) {
-        if (p.status === 'playing' || p.status === 'all-in' || p.status === 'folded') {
-          p.status = p.chips > 0 ? 'waiting' : 'sitting-out';
+        // Reset player statuses
+        for (const p of r.players) {
+          if (p.status === 'playing' || p.status === 'all-in' || p.status === 'folded') {
+            p.status = p.chips > 0 ? 'waiting' : 'no-chips';
+          }
+          p.holeCards = undefined;
+          p.hasActedThisRound = false;
+          p.totalBetInHand = 0;
         }
-        p.holeCards = undefined;
-        p.hasActedThisRound = false;
+
+        // Wipe game state — stale timers with old generation are now no-ops
+        r.gameState = null;
       }
 
-      // Step 4: Wipe game state
-      room.gameState = null;
-    }
+      emitSystemMessage(roomId, '⚡ Admin forced next hand — pot returned to players');
+      broadcastRoomState(r);
+    });
 
-    emitSystemMessage(roomId, '⚡ Admin forced next hand — pot returned to players');
-    broadcastRoomState(room);
-
-    // Start next hand after a short delay
+    // Capture current generation — if admin force-next-hands again before this fires, skip
+    const gen = getRoomGen(roomId);
     setTimeout(() => {
-      const started = tryStartNextHand(roomId);
-      if (!started) {
-        // Not enough players yet — broadcast lobby state
-        const r = roomManager.getRoom(roomId);
-        if (r) broadcastRoomState(r);
-      }
-    }, 1500);
+      if (getRoomGen(roomId) !== gen) return; // another reset happened, skip
+      withRoomLock(roomId, () => {
+        const started = tryStartNextHand(roomId);
+        if (!started) {
+          const r = roomManager.getRoom(roomId);
+          if (r) broadcastRoomState(r);
+        }
+      });
+    }, 1200);
 
     callback({ ok: true });
   });
