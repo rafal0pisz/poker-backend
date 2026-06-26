@@ -1411,6 +1411,9 @@ io.on('connection', (socket) => {
     if (decideTimer) { clearTimeout(decideTimer); drawDecideTimers.delete(roomId); }
     const botTimer = botTimers.get(roomId);
     if (botTimer) { clearTimeout(botTimer); botTimers.delete(roomId); }
+    clearPineappleDiscardTimer(roomId);
+    const debounceTimer = broadcastDebounceTimers.get(roomId);
+    if (debounceTimer) { clearTimeout(debounceTimer); broadcastDebounceTimers.delete(roomId); }
 
     // ── Atomic reset inside withRoomLock ──
     withRoomLock(roomId, () => {
@@ -1934,28 +1937,94 @@ function advanceToNextAfterDisconnect(room: Room, roomId: string): void {
 setInterval(() => {
   for (const [roomId, room] of (roomManager as any).rooms as Map<string, Room>) {
     if (!room.gameState) continue;
-    const { currentPlayerSeat, actionDeadline } = room.gameState;
-    if (!currentPlayerSeat) continue;
+    const { phase, currentPlayerSeat, actionDeadline } = room.gameState;
+    const now = Date.now();
 
-    const current = room.players.find(p => p.seat === currentPlayerSeat);
-    if (!current) continue;
+    // ── 1. Normal betting phase: stuck currentPlayerSeat ──────────────────
+    if (currentPlayerSeat) {
+      const current = room.players.find(p => p.seat === currentPlayerSeat);
+      if (current) {
+        const isStuck =
+          current.status !== 'playing' ||
+          (!current.connected && actionDeadline && now > actionDeadline + 20_000);
+        if (isStuck) {
+          console.log(`[watchdog] Room ${roomId}: stuck on ${current.nick} (status=${current.status}, connected=${current.connected}) — forcing advance`);
+          withRoomLock(roomId, () => {
+            const r = roomManager.getRoom(roomId);
+            if (!r?.gameState) return;
+            const p = r.players.find(pp => pp.seat === r.gameState!.currentPlayerSeat);
+            if (!p || p.sessionToken !== current.sessionToken) return;
+            advanceToNextAfterDisconnect(r, roomId);
+            broadcastRoomState(r);
+          });
+        }
+      }
+    }
 
-    const isStuck =
-      current.status !== 'playing' || // folded/sitting-out/disconnected set as current player
-      (!current.connected && actionDeadline && Date.now() > actionDeadline + 20_000); // deadline passed 20s ago + still disconnected
+    // ── 2. Drawmaha DRAW phase: stuck if deadline passed 30s ago ─────────
+    if (phase === 'draw') {
+      const drawDeadline = room.gameState.drawState?.drawSubmitDeadline;
+      if (drawDeadline && now > drawDeadline + 30_000) {
+        console.log(`[watchdog] Room ${roomId}: draw phase stuck — auto stand-pat`);
+        withRoomLock(roomId, () => {
+          const r = roomManager.getRoom(roomId);
+          if (!r?.gameState?.drawState) return;
+          const deck = roomManager.getDeck(roomId);
+          if (!deck) return;
+          const ds = r.gameState.drawState;
+          const pending = r.players.filter(
+            p => ds.playerStates[p.sessionToken] && !ds.playerStates[p.sessionToken].hasDrawn
+          );
+          for (const p of pending) {
+            performDrawDiscard(r, p.sessionToken, [], deck);
+            console.log(`[watchdog] Auto stand-pat: ${p.nick}`);
+          }
+          if (pending.length > 0) { broadcastRoomState(r); progressGame(roomId); }
+        });
+      }
+    }
 
-    if (isStuck) {
-      console.log(`[watchdog] Room ${roomId}: stuck on ${current.nick} (status=${current.status}, connected=${current.connected}) — forcing advance`);
+    // ── 3. Drawmaha REVEAL phase: stuck if decideDeadline passed 30s ago ─
+    const decideDeadline = room.gameState.drawState?.decideDeadline;
+    const decidingSeat = room.gameState.drawState?.currentDecidingSeat;
+    if (decideDeadline && decidingSeat && now > decideDeadline + 30_000) {
+      console.log(`[watchdog] Room ${roomId}: Drawmaha reveal phase stuck — auto-reject`);
       withRoomLock(roomId, () => {
         const r = roomManager.getRoom(roomId);
-        if (!r?.gameState) return;
-        const p = r.players.find(pp => pp.seat === r.gameState!.currentPlayerSeat);
+        if (!r?.gameState?.drawState?.currentDecidingSeat) return;
+        if (r.gameState.drawState.currentDecidingSeat !== decidingSeat) return;
+        const p = r.players.find(pp => pp.seat === r.gameState!.drawState!.currentDecidingSeat);
         if (!p) return;
-        // Only advance if still the same stuck player
-        if (p.sessionToken !== current.sessionToken) return;
-        advanceToNextAfterDisconnect(r, roomId);
-        broadcastRoomState(r);
+        const deck = roomManager.getDeck(roomId);
+        if (!deck) return;
+        const ds = r.gameState.drawState.playerStates[p.sessionToken];
+        if (ds && !ds.hasDecided) {
+          performDrawDecide(r, p.sessionToken, false, deck);
+          advanceRevealPhase(roomId);
+          console.log(`[watchdog] Auto-rejected open card for ${p.nick}`);
+        }
       });
+    }
+
+    // ── 4. Pineapple Classic DISCARD phase: stuck if deadline passed 30s ─
+    if (phase === 'pineapple-discard') {
+      const discardDeadline = room.gameState.pineappleDiscardState?.discardDeadline;
+      if (discardDeadline && now > discardDeadline + 30_000) {
+        console.log(`[watchdog] Room ${roomId}: pineapple-discard stuck — auto-discard`);
+        withRoomLock(roomId, () => {
+          const r = roomManager.getRoom(roomId);
+          if (!r?.gameState?.pineappleDiscardState) return;
+          const ds = r.gameState.pineappleDiscardState;
+          const pending = r.players.filter(
+            p => ds.playerStates[p.sessionToken] && !ds.playerStates[p.sessionToken].hasDiscarded
+          );
+          for (const p of pending) {
+            performPineappleDiscard(r, p.sessionToken, 2);
+            console.log(`[watchdog] Auto-discarded last card for ${p.nick}`);
+          }
+          if (pending.length > 0) { broadcastRoomState(r); progressGame(roomId); }
+        });
+      }
     }
   }
 }, 15_000);
