@@ -902,6 +902,11 @@ export function finalizeOmahaHlHand(room: Room): HandResult {
   // ── Edge case: only one player left (everyone else folded) ──
   if (remaining.length === 1) {
     addWinnings(remaining[0], totalPot);
+    // Calculate netAmount here (before early return, so it's never skipped)
+    for (const w of result.winnings) {
+      const p = room.players.find((pl) => pl.sessionToken === w.sessionToken);
+      if (p) w.netAmount = Math.max(0, w.amount - (p.totalBetInHand || 0));
+    }
     room.gameState.phase = 'showdown';
     room.gameState.currentPlayerSeat = null;
     room.gameState.actionDeadline = null;
@@ -918,6 +923,10 @@ export function finalizeOmahaHlHand(room: Room): HandResult {
   if (board.length < 3) {
     console.error('[OmahaHL] Board too short for evaluation:', board.length);
     addWinnings(remaining[0], totalPot);
+    for (const w of result.winnings) {
+      const p = room.players.find((pl) => pl.sessionToken === w.sessionToken);
+      if (p) w.netAmount = Math.max(0, w.amount - (p.totalBetInHand || 0));
+    }
     room.gameState.phase = 'showdown';
     room.gameState.currentPlayerSeat = null;
     room.gameState.actionDeadline = null;
@@ -1191,6 +1200,10 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
   if (remaining.length === 1) {
     const winner = remaining[0];
     addWinnings(winner, totalPot);
+    for (const w of result.winnings) {
+      const p = room.players.find((pl) => pl.sessionToken === w.sessionToken);
+      if (p) w.netAmount = Math.max(0, w.amount - (p.totalBetInHand || 0));
+    }
     console.log(`[Drawmaha] Last player standing: ${winner.nick} wins ${totalPot}`);
     room.gameState.phase = 'showdown';
     room.gameState.currentPlayerSeat = null;
@@ -1199,9 +1212,9 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
     room.gameState.pot = 0;
     room.gameState.sidePots = [];
     for (const p of room.players) p.holeCards = undefined;
-  result.playerStacks = room.players
-    .filter((p) => p.status !== 'spectator')
-    .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, chips: p.chips }));
+    result.playerStacks = room.players
+      .filter((p) => p.status !== 'spectator')
+      .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, chips: p.chips }));
     return result;
   }
 
@@ -1209,6 +1222,10 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
   if (board.length < 3) {
     console.error('[Drawmaha] Board too short for evaluation:', board.length);
     addWinnings(remaining[0], totalPot);
+    for (const w of result.winnings) {
+      const p = room.players.find((pl) => pl.sessionToken === w.sessionToken);
+      if (p) w.netAmount = Math.max(0, w.amount - (p.totalBetInHand || 0));
+    }
     room.gameState.phase = 'showdown';
     room.gameState.currentPlayerSeat = null;
     room.gameState.actionDeadline = null;
@@ -1702,9 +1719,10 @@ export function finishHand(room: Room): HandResult {
     const winner = remaining[0];
     const totalPot = allPots.reduce((s, p) => s + p.amount, 0);
     winner.chips += totalPot;
-    result.winnings.push({ sessionToken: winner.sessionToken, amount: totalPot });
+    const winnerNetAmount = Math.max(0, totalPot - (winner.totalBetInHand || 0));
+    result.winnings.push({ sessionToken: winner.sessionToken, amount: totalPot, netAmount: winnerNetAmount });
     const totalChips = room.players.reduce((s, p) => s + p.chips, 0);
-    console.log(`[finishHand] winner=${winner.nick} pot=${totalPot} winner.chips=${winner.chips} allPlayerChips=${totalChips} sidePots=${JSON.stringify(allPots)}`);
+    console.log(`[finishHand] winner=${winner.nick} pot=${totalPot} net=${winnerNetAmount} winner.chips=${winner.chips} allPlayerChips=${totalChips} sidePots=${JSON.stringify(allPots)}`);
   } else {
     const variant = room.gameState.variant;
 
