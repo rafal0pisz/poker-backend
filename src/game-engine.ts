@@ -255,8 +255,19 @@ export function startNewHand(room: Room): { deck: Card[] } {
     }
   }
 
-  const sbSeat = getNextActiveSeat(room, dealerSeat, false);
-  const bbSeat = getNextActiveSeat(room, sbSeat, false);
+  // Heads-up (exactly 2 active players): the dealer/button posts the small
+  // blind and acts first preflop; the other player posts the big blind and
+  // acts first post-flop, turn, and river. With 3+ players, SB is the seat
+  // after the dealer and BB is the seat after SB, as usual.
+  let sbSeat: number;
+  let bbSeat: number;
+  if (activePlayers.length === 2) {
+    sbSeat = dealerSeat;
+    bbSeat = getNextActiveSeat(room, dealerSeat, false);
+  } else {
+    sbSeat = getNextActiveSeat(room, dealerSeat, false);
+    bbSeat = getNextActiveSeat(room, sbSeat, false);
+  }
 
   const sbPlayer = room.players.find((p) => p.seat === sbSeat);
   const bbPlayer = room.players.find((p) => p.seat === bbSeat);
