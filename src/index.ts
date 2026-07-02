@@ -1502,6 +1502,23 @@ io.on('connection', (socket) => {
     callback({ ok: true });
   });
 
+  socket.on('admin:set-theme', (payload: { theme: string }, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback({ ok: false, error: 'No session' });
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback({ ok: false, error: 'Room not found' });
+    const adminPlayer = room.players.find(p => p.sessionToken === sessionToken && p.role === 'admin' );
+    if (!adminPlayer) return callback({ ok: false, error: 'Not admin' });
+
+    const allowed = ['classic', 'emerald', 'midnight'];
+    if (!allowed.includes(payload.theme)) return callback({ ok: false, error: 'Invalid theme' });
+
+    room.settings.theme = payload.theme as 'classic' | 'emerald' | 'midnight';
+    broadcastRoomState(room);
+    callback({ ok: true });
+  });
+
   socket.on('admin:add-chips', (payload, callback) => {
     const sessionToken = socket.data.sessionToken;
     const roomId = socket.data.roomId;

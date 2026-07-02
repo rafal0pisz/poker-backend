@@ -63,6 +63,7 @@ export interface RoomSettings {
   maxSeats: number;
   actionTimeoutSec: 15 | 30 | 60;
   tableColor?: string;
+  theme?: 'classic' | 'emerald' | 'midnight';
 }
 
 export type HandPhase = 'preflop' | 'flop' | 'draw' | 'pineapple-discard' | 'turn' | 'river' | 'showdown';
