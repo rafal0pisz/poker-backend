@@ -797,6 +797,43 @@ export function isRevealPhaseComplete(room: Room): boolean {
 // Omaha Hi-Lo helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Consolidates allPots by merging entries that share the same EFFECTIVE eligible
+ * set — i.e. the set of remaining (non-folded) players who can actually win.
+ *
+ * collectBets tracks eligibility per-street and creates a new SidePot entry
+ * whenever the contributing player set changes (e.g. one player folded, so the
+ * next street's bets land in a new entry with a different `eligiblePlayers`
+ * list). At showdown, all those entries resolve to the same group of active
+ * players. Showing them as "Main Pot / Side Pot 1 / Side Pot 2" in the UI is
+ * misleading when there are no genuine all-in stack differences — only one real
+ * pot existed. This function merges consecutive entries whose effective eligible
+ * set (after filtering by remaining-player tokens) is identical.
+ */
+function consolidatePots(pots: SidePot[], remainingTokens: Set<string>): SidePot[] {
+  const result: SidePot[] = [];
+  for (const pot of pots) {
+    const effective = pot.eligiblePlayers.filter((t) => remainingTokens.has(t));
+    if (effective.length === 0) {
+      // Orphaned pot (all eligible players folded) — cascade into last or skip
+      if (result.length > 0) result[result.length - 1].amount += pot.amount;
+      continue;
+    }
+    const last = result[result.length - 1];
+    const sameEligible =
+      last &&
+      last.eligiblePlayers.length === effective.length &&
+      effective.every((t) => last.eligiblePlayers.includes(t));
+    if (sameEligible) {
+      last.amount += pot.amount;
+    } else {
+      result.push({ amount: pot.amount, eligiblePlayers: effective });
+    }
+  }
+  return result.length > 0 ? result : pots;
+}
+
+
 /** Returns card rank for low-hand evaluation: A=1, 2-8 as face value, 9+=9+ */
 function lowCardRank(card: Card): number {
   const val = card.slice(0, -1);
@@ -901,9 +938,14 @@ export function finalizeOmahaHlHand(room: Room): HandResult {
     }
   };
 
-  const allPots: SidePot[] = room.gameState.sidePots.length > 0
+  const rawPotsHL: SidePot[] = room.gameState.sidePots.length > 0
     ? [...room.gameState.sidePots]
     : [{ amount: room.gameState.pot, eligiblePlayers: remaining.map((p) => p.sessionToken) }];
+
+  // Merge pots with same effective eligible set — avoids spurious "Main Pot / Side Pot"
+  // labels caused by collectBets splitting on street boundaries when players fold.
+  const remainingTokensHL = new Set(remaining.map((p) => p.sessionToken));
+  const allPots = consolidatePots(rawPotsHL, remainingTokensHL);
 
   const totalPot = allPots.reduce((s, p) => s + p.amount, 0);
   const board = room.gameState.communityCards;
@@ -1211,9 +1253,12 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
   // Build ordered list of all pots (main pot first, then side pots in creation order)
   // Each pot has an amount and a set of eligible session tokens.
   // All pots stored in sidePots with correct eligibility (see collectBets).
-  const allPots: SidePot[] = room.gameState.sidePots.length > 0
+  const rawPotsDM: SidePot[] = room.gameState.sidePots.length > 0
     ? [...room.gameState.sidePots]
     : [{ amount: room.gameState.pot, eligiblePlayers: remaining.map((p) => p.sessionToken) }];
+
+  const remainingTokensDM = new Set(remaining.map((p) => p.sessionToken));
+  const allPots = consolidatePots(rawPotsDM, remainingTokensDM);
 
   const totalPot = allPots.reduce((s, p) => s + p.amount, 0);
 
@@ -1742,9 +1787,15 @@ export function finishHand(room: Room): HandResult {
   }
 
   // Build pot list here so it's available in both branches (single winner and multi)
-  const allPots: SidePot[] = room.gameState.sidePots.length > 0
+  const rawPotsMain: SidePot[] = room.gameState.sidePots.length > 0
     ? [...room.gameState.sidePots]
     : [{ amount: room.gameState.pot, eligiblePlayers: remaining.map((p) => p.sessionToken) }];
+
+  // Consolidate pots whose effective eligible set is identical — avoids showing
+  // "Main Pot / Side Pot 1" labels for normal hands where collectBets split on
+  // street boundaries due to player folds, not genuine all-in stack differences.
+  const remainingTokensMain = new Set(remaining.map((p) => p.sessionToken));
+  const allPots = consolidatePots(rawPotsMain, remainingTokensMain);
 
   if (remaining.length === 1) {
     const winner = remaining[0];
