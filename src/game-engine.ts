@@ -951,30 +951,40 @@ export function finalizeOmahaHlHand(room: Room): HandResult {
   }
 
   // ── Pre-evaluate high and low for all remaining players ──
+  // Log full diagnostic info so any future incorrect result can be traced in Railway logs.
+  console.log(`[OmahaHL] Evaluating hand #${room.gameState.handNumber} — board: ${board.join(' ')} — ${remaining.length} players`);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const highEvalMap = new Map<string, { hand: any; holeUsed: Card[]; boardUsed: Card[] }>();
   const lowEvalMap = new Map<string, { cards: Card[]; score: number[]; descr: string } | null>();
 
   for (const p of remaining) {
-    // Guard: a player in remaining must have hole cards. If they're missing
-    // (e.g. due to a state sync issue), exclude them from evaluation so they
-    // neither win high nor win low — rather than silently giving them null low
-    // which would hand the low half to a weaker opponent by default.
-    if (!p.holeCards || p.holeCards.length < 2) {
-      console.error(`[OmahaHL] CRITICAL: ${p.nick} (${p.sessionToken.slice(0, 8)}) is in remaining but has no hole cards — skipping from evaluation`);
-      highEvalMap.set(p.sessionToken, null as any);
-      lowEvalMap.set(p.sessionToken, null);
-      continue;
+    const cards = p.holeCards ?? [];
+    if (cards.length < 2) {
+      // holeCards missing for a player who should be at showdown — this should NEVER happen.
+      // Log everything so we can trace the root cause in Railway, then throw so the
+      // hand fails visibly rather than producing a silently wrong winner.
+      const msg =
+        `[OmahaHL] CRITICAL hand #${room.gameState.handNumber}: ` +
+        `${p.nick} (${p.sessionToken.slice(0, 8)}) status=${p.status} ` +
+        `holeCards=${JSON.stringify(p.holeCards)} board=${board.join(' ')} ` +
+        `— hole cards missing at showdown, cannot determine correct winner`;
+      console.error(msg);
+      throw new Error(msg);
     }
     try {
-      const highResult = solveOmaha(p.holeCards ?? [], board);
+      const highResult = solveOmaha(cards, board);
       highEvalMap.set(p.sessionToken, highResult);
+      const lowResult = solveOmahaLow(cards, board);
+      lowEvalMap.set(p.sessionToken, lowResult);
+      console.log(
+        `[OmahaHL]   ${p.nick}: hole=${cards.join(' ')} ` +
+        `high=${highResult?.hand?.descr ?? '?'} ` +
+        `low=${lowResult ? lowResult.descr : 'none'}`,
+      );
     } catch (err) {
-      console.error(`[OmahaHL] High eval failed for ${p.nick}:`, err);
+      console.error(`[OmahaHL] Eval failed for ${p.nick} (hole=${cards.join(' ')}):`, err);
       throw err;
     }
-    const lowResult = solveOmahaLow(p.holeCards ?? [], board);
-    lowEvalMap.set(p.sessionToken, lowResult);
   }
 
   // ── Showdown cards ──
@@ -1025,17 +1035,15 @@ export function finalizeOmahaHlHand(room: Room): HandResult {
       continue;
     }
 
-    // ── High winner(s) ── (exclude players who had no hole cards — already in eval map as null)
-    const highEligible = eligible
-      .filter((p) => highEvalMap.get(p.sessionToken) != null)
-      .map((p) => ({ player: p, ...highEvalMap.get(p.sessionToken)! }));
+    // ── High winner(s) ──
+    const highEligible = eligible.map((p) => ({ player: p, ...highEvalMap.get(p.sessionToken)! }));
     const highWinnerHands = Hand.winners(highEligible.map((e) => e.hand));
     const highWinners = highEligible.filter((e) => highWinnerHands.includes(e.hand));
 
     // ── Low winner(s) — only among players with a qualifying low ──
     const lowEligible = eligible
       .map((p) => ({ player: p, low: lowEvalMap.get(p.sessionToken) }))
-      .filter((e) => e.low != null) as { player: Player; low: NonNullable<ReturnType<typeof solveOmahaLow>> }[];
+      .filter((e) => e.low !== null) as { player: Player; low: NonNullable<ReturnType<typeof solveOmahaLow>> }[];
 
     const hasQualifyingLow = lowEligible.length > 0;
 
