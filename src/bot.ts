@@ -122,6 +122,10 @@ export function decideBotAction(room: Room): BotDecision | null {
   const raiseSmall = Math.min(gs.currentBet + bb * 2, bot.chips + bot.currentBet);
   const raisePot   = Math.min(Math.floor(pot * 0.75) + gs.currentBet, bot.chips + bot.currentBet);
 
+  // If the bot can't raise above the current bet level, 'raise' would be a
+  // short all-in (amount ≤ currentBet). Use 'all-in' or 'call' instead.
+  const canRaise = (bot.chips + bot.currentBet) > gs.currentBet + gs.minRaise;
+
   if (score <= 2) {
     // Weak — mostly fold/check
     if (toCall === 0) return { action: 'check' };
@@ -131,21 +135,21 @@ export function decideBotAction(room: Room): BotDecision | null {
 
   if (score <= 4) {
     // Marginal
-    if (toCall === 0) return rand < 0.75 ? { action: 'check' } : { action: 'raise', amount: raiseSmall };
+    if (toCall === 0) return rand < 0.75 ? { action: 'check' } : canRaise ? { action: 'raise', amount: raiseSmall } : { action: 'all-in' };
     if (potOdds < 0.25) return rand < 0.55 ? { action: 'call' } : { action: 'fold' };
     return rand < 0.3 ? { action: 'call' } : { action: 'fold' };
   }
 
   if (score <= 6) {
     // Good
-    if (toCall === 0) return rand < 0.4 ? { action: 'check' } : { action: 'raise', amount: raiseSmall };
-    return rand < 0.65 ? { action: 'call' } : rand < 0.85 ? { action: 'raise', amount: raiseSmall } : { action: 'fold' };
+    if (toCall === 0) return rand < 0.4 ? { action: 'check' } : canRaise ? { action: 'raise', amount: raiseSmall } : { action: 'all-in' };
+    return rand < 0.65 ? { action: 'call' } : rand < 0.85 ? (canRaise ? { action: 'raise', amount: raiseSmall } : { action: 'all-in' }) : { action: 'fold' };
   }
 
   if (score <= 8) {
     // Strong
-    if (toCall === 0) return rand < 0.15 ? { action: 'check' } : { action: 'raise', amount: raisePot };
-    return rand < 0.15 ? { action: 'call' } : { action: 'raise', amount: raisePot };
+    if (toCall === 0) return rand < 0.15 ? { action: 'check' } : canRaise ? { action: 'raise', amount: raisePot } : { action: 'all-in' };
+    return rand < 0.15 ? { action: 'call' } : canRaise ? { action: 'raise', amount: raisePot } : { action: 'all-in' };
   }
 
   // Monster

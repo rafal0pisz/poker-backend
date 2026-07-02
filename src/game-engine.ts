@@ -420,11 +420,17 @@ export function performAction(
       player.currentBet = amount;
       player.handContribution = (player.handContribution || 0) + additionalChips;
       player.totalBetInHand += additionalChips;
-      room.gameState.currentBet = amount;
-      room.gameState.minRaise = Math.max(raiseSize, room.settings.bigBlind);
-      for (const p of room.players) {
-        if (p.sessionToken !== player.sessionToken && p.status === 'playing') {
-          p.hasActedThisRound = false;
+      // Only update currentBet and reopen the action when this is a FULL raise
+      // (amount ≥ currentBet). A short all-in (isAllIn && amount < currentBet)
+      // is a partial call — it does NOT reopen the action for players who already
+      // acted, and MUST NOT decrease currentBet.
+      if (amount >= room.gameState.currentBet) {
+        room.gameState.currentBet = amount;
+        room.gameState.minRaise = Math.max(raiseSize, room.settings.bigBlind);
+        for (const p of room.players) {
+          if (p.sessionToken !== player.sessionToken && p.status === 'playing') {
+            p.hasActedThisRound = false;
+          }
         }
       }
       player.hasActedThisRound = true;
