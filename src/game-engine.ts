@@ -956,6 +956,16 @@ export function finalizeOmahaHlHand(room: Room): HandResult {
   const lowEvalMap = new Map<string, { cards: Card[]; score: number[]; descr: string } | null>();
 
   for (const p of remaining) {
+    // Guard: a player in remaining must have hole cards. If they're missing
+    // (e.g. due to a state sync issue), exclude them from evaluation so they
+    // neither win high nor win low — rather than silently giving them null low
+    // which would hand the low half to a weaker opponent by default.
+    if (!p.holeCards || p.holeCards.length < 2) {
+      console.error(`[OmahaHL] CRITICAL: ${p.nick} (${p.sessionToken.slice(0, 8)}) is in remaining but has no hole cards — skipping from evaluation`);
+      highEvalMap.set(p.sessionToken, null as any);
+      lowEvalMap.set(p.sessionToken, null);
+      continue;
+    }
     try {
       const highResult = solveOmaha(p.holeCards ?? [], board);
       highEvalMap.set(p.sessionToken, highResult);
@@ -1015,15 +1025,17 @@ export function finalizeOmahaHlHand(room: Room): HandResult {
       continue;
     }
 
-    // ── High winner(s) ──
-    const highEligible = eligible.map((p) => ({ player: p, ...highEvalMap.get(p.sessionToken)! }));
+    // ── High winner(s) ── (exclude players who had no hole cards — already in eval map as null)
+    const highEligible = eligible
+      .filter((p) => highEvalMap.get(p.sessionToken) != null)
+      .map((p) => ({ player: p, ...highEvalMap.get(p.sessionToken)! }));
     const highWinnerHands = Hand.winners(highEligible.map((e) => e.hand));
     const highWinners = highEligible.filter((e) => highWinnerHands.includes(e.hand));
 
     // ── Low winner(s) — only among players with a qualifying low ──
     const lowEligible = eligible
       .map((p) => ({ player: p, low: lowEvalMap.get(p.sessionToken) }))
-      .filter((e) => e.low !== null) as { player: Player; low: NonNullable<ReturnType<typeof solveOmahaLow>> }[];
+      .filter((e) => e.low != null) as { player: Player; low: NonNullable<ReturnType<typeof solveOmahaLow>> }[];
 
     const hasQualifyingLow = lowEligible.length > 0;
 
