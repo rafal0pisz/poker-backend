@@ -1511,10 +1511,10 @@ io.on('connection', (socket) => {
     const adminPlayer = room.players.find(p => p.sessionToken === sessionToken && p.role === 'admin' );
     if (!adminPlayer) return callback({ ok: false, error: 'Not admin' });
 
-    const allowed = ['classic', 'emerald', 'midnight'];
+    const allowed = ['classic', 'sage', 'amber'];
     if (!allowed.includes(payload.theme)) return callback({ ok: false, error: 'Invalid theme' });
 
-    room.settings.theme = payload.theme as 'classic' | 'emerald' | 'midnight';
+    room.settings.theme = payload.theme as 'classic' | 'sage' | 'amber';
     broadcastRoomState(room);
     callback({ ok: true });
   });
