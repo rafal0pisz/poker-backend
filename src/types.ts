@@ -323,6 +323,10 @@ export interface ClientToServerEvents {
     payload: { color: string },
     callback: (response: { ok: boolean; error?: string }) => void
   ) => void;
+  'admin:set-theme': (
+    payload: { theme: string },
+    callback: (response: { ok: boolean; error?: string }) => void
+  ) => void;
   'admin:add-chips': (
     payload: { targetSessionToken: string; amount: number },
     callback?: (response: { ok: boolean; error?: string; queued?: boolean }) => void,
