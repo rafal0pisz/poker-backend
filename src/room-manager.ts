@@ -53,6 +53,7 @@ class RoomManager {
       sessionSummary: [],
       playerStats: {},
       paused: false,
+      handHistory: [],
     };
 
     this.rooms.set(roomId, room);

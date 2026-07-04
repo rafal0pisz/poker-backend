@@ -347,10 +347,39 @@ export function startNewHand(room: Room): { deck: Card[] } {
   bbPlayer.totalBetInHand = bb;
   if (bbPlayer.chips === 0) bbPlayer.status = 'all-in';
 
+  // ===== STRADDLE =====
+  // A standing "always straddle when I'm UTG" preference (Player.straddleNextHand),
+  // NOT a live per-hand decision — straddle must be posted blind, before hole
+  // cards are dealt, exactly like SB/BB, or the straddler would get to look at
+  // their cards before committing extra money that everyone else has to match.
+  // Only meaningful with 3+ players (heads-up has no seat after BB) and only
+  // when the UTG player can actually raise the bet (chips > bb) — a stack that
+  // can't clear a full BB isn't posting a meaningful straddle, it just plays
+  // its hand normally when action reaches it.
+  const utgSeat = activePlayers.length >= 3 ? getNextActiveSeat(room, bbSeat, false) : null;
+  const utgPlayer = utgSeat !== null ? room.players.find((p) => p.seat === utgSeat) : undefined;
+  let straddleAmount = 0;
+  let straddlePosted = false;
+  if (room.settings.straddleEnabled && utgPlayer?.straddleNextHand && utgPlayer.chips > bb) {
+    straddleAmount = Math.min(bb * 2, utgPlayer.chips);
+    if (straddleAmount > bb) {
+      utgPlayer.chips -= straddleAmount;
+      utgPlayer.currentBet = straddleAmount;
+      utgPlayer.handContribution = (utgPlayer.handContribution || 0) + straddleAmount;
+      utgPlayer.totalBetInHand = straddleAmount;
+      if (utgPlayer.chips === 0) utgPlayer.status = 'all-in';
+      straddlePosted = true;
+    }
+  }
+
+  // With a straddle posted, the straddler acts LAST preflop (like BB's usual
+  // option) — action starts with whoever's after them instead of with them.
   const firstToAct =
     activePlayers.length === 2
       ? sbSeat
-      : getNextActiveSeat(room, bbSeat, false);
+      : straddlePosted
+        ? getNextActiveSeat(room, utgSeat!, false)
+        : utgSeat!;
 
   room.gameState = {
     phase: 'preflop',
@@ -358,7 +387,7 @@ export function startNewHand(room: Room): { deck: Card[] } {
     communityCards: [],
     pot: 0,
     sidePots: [],
-    currentBet: bb,
+    currentBet: straddlePosted ? straddleAmount : bb,
     minRaise: bb,
     dealerSeat,
     currentPlayerSeat: firstToAct,
@@ -369,6 +398,14 @@ export function startNewHand(room: Room): { deck: Card[] } {
   };
 
   return { deck };
+}
+
+const MAX_HAND_HISTORY = 30;
+
+/** Appends a completed hand to the room's session-only history, capped at MAX_HAND_HISTORY. */
+export function recordHandHistory(room: Room, result: HandResult): void {
+  room.handHistory.push(result);
+  if (room.handHistory.length > MAX_HAND_HISTORY) room.handHistory.shift();
 }
 
 /**

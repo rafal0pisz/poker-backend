@@ -31,6 +31,7 @@ import {
   dealNextRitCard,
   evaluateBoardPots,
   finalizeRunItTwiceHand,
+  recordHandHistory,
 } from './game-engine.js';
 import type {
   ClientToServerEvents,
@@ -467,6 +468,7 @@ function finishRitReveal(roomId: string) {
   const result = finalizeRunItTwiceHand(
     room, ctx.remaining, ctx.allPots, rit.boards[0], rit.boards[1], ctx.evalResults[0], ctx.evalResults[1],
   );
+  recordHandHistory(room, result);
   updatePlayerStats(room, result);
   broadcastRoomState(room);
   io.to(roomId).emit('game:hand-result', result);
@@ -1003,6 +1005,7 @@ function progressGame(roomId: string) {
   if (isHandComplete(room) && room.gameState.phase !== 'showdown') {
     const result = finishHand(room);
     room.gameState.lastHandResult = result;
+    recordHandHistory(room, result);
     updatePlayerStats(room, result);
     broadcastRoomState(room);
     io.to(roomId).emit('game:hand-result', result);
@@ -1025,6 +1028,7 @@ function progressGame(roomId: string) {
       advancePhase(room, roomManager.getDeck(roomId) || []);
       const result = finishHand(room);
       room.gameState.lastHandResult = result;
+      recordHandHistory(room, result);
       updatePlayerStats(room, result);
       broadcastRoomState(room);
       io.to(roomId).emit('game:hand-result', result);
@@ -1503,6 +1507,23 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Standing straddle preference — can be toggled any time, not just between
+  // hands; it only takes effect the next time this player deals into the UTG
+  // seat with the table's straddle option enabled (see startNewHand).
+  socket.on('game:set-straddle', (payload, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback?.({ ok: false, error: 'No session' });
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback?.({ ok: false, error: 'Room not found' });
+    const player = room.players.find((p) => p.sessionToken === sessionToken);
+    if (!player) return callback?.({ ok: false, error: 'Player not found' });
+
+    player.straddleNextHand = !!payload.enabled;
+    broadcastRoomState(room);
+    callback?.({ ok: true });
+  });
+
   socket.on('game:sit-out', () => {
     const sessionToken = socket.data.sessionToken;
     const roomId = socket.data.roomId;
@@ -1819,6 +1840,20 @@ io.on('connection', (socket) => {
     if (!allowed.includes(payload.theme)) return callback({ ok: false, error: 'Invalid theme' });
 
     room.settings.theme = payload.theme as 'classic' | 'sage' | 'amber';
+    broadcastRoomState(room);
+    callback({ ok: true });
+  });
+
+  socket.on('admin:set-straddle-enabled', (payload: { enabled: boolean }, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback({ ok: false, error: 'No session' });
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback({ ok: false, error: 'Room not found' });
+    const adminPlayer = room.players.find(p => p.sessionToken === sessionToken && p.role === 'admin');
+    if (!adminPlayer) return callback({ ok: false, error: 'Not admin' });
+
+    room.settings.straddleEnabled = !!payload.enabled;
     broadcastRoomState(room);
     callback({ ok: true });
   });

@@ -55,6 +55,12 @@ export interface Player {
   // Pre-action: player can select check/fold or fold before their turn
   // When it becomes their turn, this action fires automatically.
   pendingAction: 'check-fold' | 'fold' | null;
+  // Straddle preference — a standing "always straddle when I'm UTG" toggle,
+  // NOT a per-hand decision (straddle must be posted blind, before hole
+  // cards are dealt, or it'd give the straddler an unfair informational
+  // edge). Applied automatically in startNewHand; stays set until the
+  // player turns it off via game:set-straddle.
+  straddleNextHand?: boolean;
 }
 
 export interface RoomSettings {
@@ -65,6 +71,8 @@ export interface RoomSettings {
   actionTimeoutSec: 15 | 30 | 60;
   tableColor?: string;
   theme?: 'classic' | 'sage' | 'amber';
+  // Admin-controlled: whether the UTG straddle option is available at this table
+  straddleEnabled?: boolean;
 }
 
 export type HandPhase = 'preflop' | 'flop' | 'draw' | 'pineapple-discard' | 'turn' | 'river' | 'showdown';
@@ -281,6 +289,10 @@ export interface Room {
   // Persistent session summary — includes players who left
   sessionSummary: SessionResult[];
   playerStats: Record<string, PlayerStats>;  // keyed by sessionToken
+  // Recent completed hands, most-recently-played last — capped at
+  // MAX_HAND_HISTORY (see game-engine.ts). In-memory only, like everything
+  // else here: lost on server restart, not persisted across sessions.
+  handHistory: HandResult[];
 }
 
 // ===== CLIENT → SERVER EVENTS =====
@@ -383,6 +395,15 @@ export interface ClientToServerEvents {
   'admin:set-theme': (
     payload: { theme: string },
     callback: (response: { ok: boolean; error?: string }) => void
+  ) => void;
+  'admin:set-straddle-enabled': (
+    payload: { enabled: boolean },
+    callback: (response: { ok: boolean; error?: string }) => void
+  ) => void;
+  // Player's standing straddle preference — see Player.straddleNextHand
+  'game:set-straddle': (
+    payload: { enabled: boolean },
+    callback?: (response: { ok: boolean; error?: string }) => void,
   ) => void;
   'admin:add-chips': (
     payload: { targetSessionToken: string; amount: number },
