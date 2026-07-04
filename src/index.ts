@@ -773,18 +773,12 @@ function tryStartNextHand(roomId: string): boolean {
         (p as any).pendingSitOut = false;
       }
     }
-    const { deck, straddle } = startNewHand(room);
+    const { deck } = startNewHand(room);
     roomManager.setDeck(roomId, deck);
     broadcastRoomState(room);
     sendHoleCards(room);
     scheduleActionTimer(roomId); // preflop — first to act
     console.log(`[tryStartNextHand] Started hand #${room.gameState?.handNumber} in ${roomId}`);
-    // Straddle is easy to miss otherwise — it's a silent stack/pot change
-    // buried in a corner of the table, and it only fires whenever whoever
-    // opted in happens to land on UTG. Announce it plainly when it happens.
-    if (straddle) {
-      emitSystemMessage(roomId, `🎲 ${straddle.nick} straddles for ${straddle.amount}`);
-    }
     // Bomb Pot (and any other variant with no preflop betting round) can land
     // straight into an all-in runout at the very first street if antes bust
     // most of the table — nobody has acted yet, so nothing will call
@@ -1513,23 +1507,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Standing straddle preference — can be toggled any time, not just between
-  // hands; it only takes effect the next time this player deals into the UTG
-  // seat with the table's straddle option enabled (see startNewHand).
-  socket.on('game:set-straddle', (payload, callback) => {
-    const sessionToken = socket.data.sessionToken;
-    const roomId = socket.data.roomId;
-    if (!sessionToken || !roomId) return callback?.({ ok: false, error: 'No session' });
-    const room = roomManager.getRoom(roomId);
-    if (!room) return callback?.({ ok: false, error: 'Room not found' });
-    const player = room.players.find((p) => p.sessionToken === sessionToken);
-    if (!player) return callback?.({ ok: false, error: 'Player not found' });
-
-    player.straddleNextHand = !!payload.enabled;
-    broadcastRoomState(room);
-    callback?.({ ok: true });
-  });
-
   socket.on('game:sit-out', () => {
     const sessionToken = socket.data.sessionToken;
     const roomId = socket.data.roomId;
@@ -1846,20 +1823,6 @@ io.on('connection', (socket) => {
     if (!allowed.includes(payload.theme)) return callback({ ok: false, error: 'Invalid theme' });
 
     room.settings.theme = payload.theme as 'classic' | 'sage' | 'amber';
-    broadcastRoomState(room);
-    callback({ ok: true });
-  });
-
-  socket.on('admin:set-straddle-enabled', (payload: { enabled: boolean }, callback) => {
-    const sessionToken = socket.data.sessionToken;
-    const roomId = socket.data.roomId;
-    if (!sessionToken || !roomId) return callback({ ok: false, error: 'No session' });
-    const room = roomManager.getRoom(roomId);
-    if (!room) return callback({ ok: false, error: 'Room not found' });
-    const adminPlayer = room.players.find(p => p.sessionToken === sessionToken && p.role === 'admin');
-    if (!adminPlayer) return callback({ ok: false, error: 'Not admin' });
-
-    room.settings.straddleEnabled = !!payload.enabled;
     broadcastRoomState(room);
     callback({ ok: true });
   });

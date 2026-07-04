@@ -197,7 +197,7 @@ export function solvePineapple(
  * Starts a new hand.
  * Shuffles deck, deals cards, posts blinds, sets first to act.
  */
-export function startNewHand(room: Room): { deck: Card[]; straddle?: { sessionToken: string; nick: string; amount: number } } {
+export function startNewHand(room: Room): { deck: Card[] } {
   for (const player of room.players) {
     player.currentBet = 0;
     player.handContribution = 0;
@@ -347,39 +347,10 @@ export function startNewHand(room: Room): { deck: Card[]; straddle?: { sessionTo
   bbPlayer.totalBetInHand = bb;
   if (bbPlayer.chips === 0) bbPlayer.status = 'all-in';
 
-  // ===== STRADDLE =====
-  // A standing "always straddle when I'm UTG" preference (Player.straddleNextHand),
-  // NOT a live per-hand decision — straddle must be posted blind, before hole
-  // cards are dealt, exactly like SB/BB, or the straddler would get to look at
-  // their cards before committing extra money that everyone else has to match.
-  // Only meaningful with 3+ players (heads-up has no seat after BB) and only
-  // when the UTG player can actually raise the bet (chips > bb) — a stack that
-  // can't clear a full BB isn't posting a meaningful straddle, it just plays
-  // its hand normally when action reaches it.
-  const utgSeat = activePlayers.length >= 3 ? getNextActiveSeat(room, bbSeat, false) : null;
-  const utgPlayer = utgSeat !== null ? room.players.find((p) => p.seat === utgSeat) : undefined;
-  let straddleAmount = 0;
-  let straddlePosted = false;
-  if (room.settings.straddleEnabled && utgPlayer?.straddleNextHand && utgPlayer.chips > bb) {
-    straddleAmount = Math.min(bb * 2, utgPlayer.chips);
-    if (straddleAmount > bb) {
-      utgPlayer.chips -= straddleAmount;
-      utgPlayer.currentBet = straddleAmount;
-      utgPlayer.handContribution = (utgPlayer.handContribution || 0) + straddleAmount;
-      utgPlayer.totalBetInHand = straddleAmount;
-      if (utgPlayer.chips === 0) utgPlayer.status = 'all-in';
-      straddlePosted = true;
-    }
-  }
-
-  // With a straddle posted, the straddler acts LAST preflop (like BB's usual
-  // option) — action starts with whoever's after them instead of with them.
   const firstToAct =
     activePlayers.length === 2
       ? sbSeat
-      : straddlePosted
-        ? getNextActiveSeat(room, utgSeat!, false)
-        : utgSeat!;
+      : getNextActiveSeat(room, bbSeat, false);
 
   room.gameState = {
     phase: 'preflop',
@@ -387,7 +358,7 @@ export function startNewHand(room: Room): { deck: Card[]; straddle?: { sessionTo
     communityCards: [],
     pot: 0,
     sidePots: [],
-    currentBet: straddlePosted ? straddleAmount : bb,
+    currentBet: bb,
     minRaise: bb,
     dealerSeat,
     currentPlayerSeat: firstToAct,
@@ -397,10 +368,7 @@ export function startNewHand(room: Room): { deck: Card[]; straddle?: { sessionTo
     lastHandResult: null,
   };
 
-  return {
-    deck,
-    straddle: straddlePosted ? { sessionToken: utgPlayer!.sessionToken, nick: utgPlayer!.nick, amount: straddleAmount } : undefined,
-  };
+  return { deck };
 }
 
 const MAX_HAND_HISTORY = 30;
