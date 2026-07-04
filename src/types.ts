@@ -55,6 +55,9 @@ export interface Player {
   // Pre-action: player can select check/fold or fold before their turn
   // When it becomes their turn, this action fires automatically.
   pendingAction: 'check-fold' | 'fold' | null;
+  // Time Bank uses left this session (starts at 2 — see callTime in
+  // game-engine.ts). Undefined means the full allowance is still available.
+  timeBankUsesLeft?: number;
 }
 
 export interface RoomSettings {
@@ -65,6 +68,8 @@ export interface RoomSettings {
   actionTimeoutSec: 15 | 30 | 60;
   tableColor?: string;
   theme?: 'classic' | 'sage' | 'amber';
+  // Admin-controlled: whether players can call +30s Time Bank (2x per session)
+  timeBankEnabled?: boolean;
 }
 
 export type HandPhase = 'preflop' | 'flop' | 'draw' | 'pineapple-discard' | 'turn' | 'river' | 'showdown';
@@ -195,6 +200,10 @@ export interface GameState {
   // boards are dealt one at a time, one board fully before the next, at
   // the same pace as a normal all-in runout (see advanceRitReveal).
   runItTwiceReveal?: RunItTwiceRevealState;
+  // True when the currently-acting player has called Time Bank on this
+  // decision — drives the blue timer ring shown to everyone else. Reset
+  // whenever the turn moves on (nextPlayer/advancePhase).
+  timeBankActive?: boolean;
 }
 
 // ===== RUN IT TWICE =====
@@ -387,6 +396,14 @@ export interface ClientToServerEvents {
   'admin:set-theme': (
     payload: { theme: string },
     callback: (response: { ok: boolean; error?: string }) => void
+  ) => void;
+  'admin:set-time-bank-enabled': (
+    payload: { enabled: boolean },
+    callback: (response: { ok: boolean; error?: string }) => void
+  ) => void;
+  // Player calls Time Bank (+30s) on their current decision — see callTime in game-engine.ts
+  'game:call-time': (
+    callback?: (response: { ok: boolean; error?: string }) => void,
   ) => void;
   'admin:add-chips': (
     payload: { targetSessionToken: string; amount: number },

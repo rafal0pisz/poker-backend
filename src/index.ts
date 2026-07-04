@@ -32,6 +32,7 @@ import {
   evaluateBoardPots,
   finalizeRunItTwiceHand,
   recordHandHistory,
+  callTime,
 } from './game-engine.js';
 import type {
   ClientToServerEvents,
@@ -1341,6 +1342,9 @@ io.on('connection', (socket) => {
 
     if (tryStartNextHand(roomId)) {
       emitSystemMessage(roomId, '🎰 Game started');
+      if (room.settings.timeBankEnabled) {
+        emitSystemMessage(roomId, '⏱️ Time Bank is on — each player can call +Time twice this session, +30 seconds each time.');
+      }
       callback?.({ ok: true });
     } else {
       callback?.({ ok: false, error: 'Could not start the game' });
@@ -1393,6 +1397,21 @@ io.on('connection', (socket) => {
     }
     callback?.({ ok: true });
     withRoomLock(roomId, () => progressGame(roomId));
+  });
+
+  socket.on('game:call-time', (callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback?.({ ok: false, error: 'No session' });
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback?.({ ok: false, error: 'Room not found' });
+
+    const result = callTime(room, sessionToken);
+    if (!result.ok) return callback?.({ ok: false, error: result.error });
+
+    scheduleActionTimer(roomId); // reschedule the auto-fold timer to match the extended deadline
+    broadcastRoomState(room);
+    callback?.({ ok: true });
   });
 
   // ===== DRAWMAHA: Draw phase — submit discard =====
@@ -1823,6 +1842,20 @@ io.on('connection', (socket) => {
     if (!allowed.includes(payload.theme)) return callback({ ok: false, error: 'Invalid theme' });
 
     room.settings.theme = payload.theme as 'classic' | 'sage' | 'amber';
+    broadcastRoomState(room);
+    callback({ ok: true });
+  });
+
+  socket.on('admin:set-time-bank-enabled', (payload: { enabled: boolean }, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback({ ok: false, error: 'No session' });
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback({ ok: false, error: 'Room not found' });
+    const adminPlayer = room.players.find(p => p.sessionToken === sessionToken && p.role === 'admin');
+    if (!adminPlayer) return callback({ ok: false, error: 'Not admin' });
+
+    room.settings.timeBankEnabled = !!payload.enabled;
     broadcastRoomState(room);
     callback({ ok: true });
   });

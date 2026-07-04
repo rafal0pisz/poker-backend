@@ -554,6 +554,33 @@ export function performAction(
   return { ok: true };
 }
 
+// ===== TIME BANK =====
+// Fixed allowance: 2 uses per player per session, +30s per use. Not
+// configurable beyond on/off — keeps this simple rather than adding a size
+// picker nobody asked for.
+const TIME_BANK_MAX_USES = 2;
+const TIME_BANK_INCREMENT_MS = 30_000;
+
+export function callTime(room: Room, sessionToken: string): { ok: true } | { ok: false; error: string } {
+  if (!room.gameState) return { ok: false, error: 'Game not started' };
+  if (!room.settings.timeBankEnabled) return { ok: false, error: 'Time Bank is not enabled' };
+
+  const player = room.players.find((p) => p.sessionToken === sessionToken);
+  if (!player) return { ok: false, error: 'Player not found' };
+  if (player.seat !== room.gameState.currentPlayerSeat) return { ok: false, error: "It's not your turn" };
+  if (player.status !== 'playing') return { ok: false, error: 'You are not an active player' };
+  if (!room.gameState.actionDeadline) return { ok: false, error: 'No active timer' };
+
+  const usesLeft = player.timeBankUsesLeft ?? TIME_BANK_MAX_USES;
+  if (usesLeft <= 0) return { ok: false, error: 'No Time Bank left' };
+
+  room.gameState.actionDeadline += TIME_BANK_INCREMENT_MS;
+  room.gameState.timeBankActive = true;
+  player.timeBankUsesLeft = usesLeft - 1;
+
+  return { ok: true };
+}
+
 // ===== DRAWMAHA — DRAW PHASE =====
 
 /**
@@ -1683,6 +1710,7 @@ export function advancePhase(room: Room, deck: Card[]): void {
   if (!room.gameState) return;
 
   const variant = room.gameState.variant;
+  room.gameState.timeBankActive = false; // new street, new decision
 
   collectBets(room);
 
@@ -1807,6 +1835,9 @@ export function advancePhase(room: Room, deck: Card[]): void {
 
 export function nextPlayer(room: Room): void {
   if (!room.gameState || room.gameState.currentPlayerSeat === null) return;
+  // Time Bank is per-decision — the player who called it keeps the blue ring
+  // until their turn actually ends, then it's someone else's decision.
+  room.gameState.timeBankActive = false;
   // If no 'playing' players remain (all all-in or folded), clear current seat
   // so progressGame can detect runout instead of looping back to an all-in player
   const playingSeats = room.players
