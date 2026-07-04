@@ -1111,6 +1111,7 @@ export function finalizeOmahaHlHand(room: Room): HandResult {
   let mainHighWinners: { sessionToken: string; amount: number; handDescription: string }[] = [];
   let mainLowWinners: { sessionToken: string; amount: number; handDescription: string }[] | null = null;
   let mainNoLow = false;
+  let mainLowWinningCards: Card[] = [];
 
   // ── Process each pot ──
   for (let potIndex = 0; potIndex < allPots.length; potIndex++) {
@@ -1224,6 +1225,7 @@ export function finalizeOmahaHlHand(room: Room): HandResult {
         mainLowWinners = lowWinners.map(({ player, low }) => ({
           sessionToken: player.sessionToken, amount: lowPerWinner, handDescription: low.descr,
         }));
+        mainLowWinningCards = lowWinners[0]?.low.cards ?? [];
       }
     }
 
@@ -1243,10 +1245,13 @@ export function finalizeOmahaHlHand(room: Room): HandResult {
     noLow: mainNoLow,
   };
 
-  // ── Set winningCards from main-pot high winner ──
+  // ── Set winningCards from main-pot high winner, winningCardsSecondary from low ──
   if (mainHighWinners.length > 0) {
     const hE = highEvalMap.get(mainHighWinners[0].sessionToken);
     if (hE) result.winningCards = [...hE.holeUsed, ...hE.boardUsed];
+  }
+  if (mainLowWinningCards.length > 0) {
+    result.winningCardsSecondary = mainLowWinningCards;
   }
 
   // ── Finalize ──
@@ -1610,10 +1615,15 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
     delete (result as any)._drawmahaTexasWinners;
   }
 
-  // Highlight the Omaha winner's 2+3 cards from the main pot
+  // Highlight the Omaha winner's 2+3 cards from the main pot, and the Draw
+  // winner's cards (all 5 hole cards — Five-card Draw uses no board) as the
+  // secondary highlight.
   if (mainPotOmahaWinner) {
     const oE = omahaEvalMap.get(mainPotOmahaWinner.player.sessionToken);
     if (oE) result.winningCards = [...oE.holeUsed, ...oE.boardUsed];
+  }
+  if (mainPotTexasWinner?.player.holeCards) {
+    result.winningCardsSecondary = [...mainPotTexasWinner.player.holeCards];
   }
 
   room.gameState.phase = 'showdown';

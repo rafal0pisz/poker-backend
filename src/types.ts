@@ -79,6 +79,11 @@ export interface HandResult {
   showdownCards: { sessionToken: string; cards: Card[]; handName: string }[];
   // The cards that formed the winning hand (5 cards). Used to highlight on the UI.
   winningCards: Card[];
+  // Split-pot variants only (Omaha Hi-Lo, Drawmaha): the OTHER winning hand's
+  // cards (Low, or Draw) — highlighted in a second color. A card present in
+  // both this and winningCards is highlighted as shared (e.g. a board card
+  // used by both the High and the Low hand).
+  winningCardsSecondary?: Card[];
   boardCards?: Card[];
   handNumber?: number;
   totalPot?: number;

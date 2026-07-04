@@ -1041,6 +1041,53 @@ function progressGame(roomId: string) {
       }, resultDelay2);
       return;
     }
+    // Before dealing the next street, check whether the betting round we
+    // just finished leaves an all-in runout (all, or all but one, of the
+    // remaining players are all-in). If so, offer Run It Twice — exactly
+    // once per hand — using the board exactly as it stands right now, so
+    // nobody sees the next street before deciding. Drawmaha's draw phase and
+    // Pineapple Classic's discard phase must still run regardless of chip
+    // status, so this is skipped heading into either.
+    const variant = room.gameState.variant;
+    const headingIntoMandatoryPhase =
+      room.gameState.phase === 'flop' &&
+      (variant === 'pineapple-classic' || variant === 'drawmaha' || variant === 'drawmaha-pl');
+
+    if (!headingIntoMandatoryPhase) {
+      const playingCount = room.players.filter((p) => p.status === 'playing').length;
+      const allInCount = room.players.filter((p) => p.status === 'all-in').length;
+      // Full runout: everyone is all-in
+      const fullAllInRunout = playingCount === 0 && allInCount >= 2;
+      // Caller runout: one player called but didn't go all-in, opponents are all-in
+      const lastManRunout = playingCount === 1 && allInCount >= 1;
+
+      if ((fullAllInRunout || lastManRunout) && canOfferRunItTwice(room)) {
+        room.gameState.currentPlayerSeat = null;
+        room.gameState.actionDeadline = null;
+
+        // Auto-check the last 'playing' player so betting round completes cleanly
+        if (lastManRunout) {
+          const lastPlayer = room.players.find((p) => p.status === 'playing');
+          if (lastPlayer) lastPlayer.hasActedThisRound = true;
+        }
+
+        // Reveal all active players' hole cards (Drawmaha is excluded from
+        // Run It Twice entirely, so no need to check for it here)
+        const revealPayload = room.players
+          .filter((p) => (p.status === 'all-in' || p.status === 'playing') && p.holeCards)
+          .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, cards: p.holeCards! }));
+        if (revealPayload.length >= 2) {
+          io.to(roomId).emit('game:all-in-reveal', revealPayload);
+        }
+
+        initRunItTwiceVote(room, RUN_IT_TWICE_DECIDE_MS);
+        broadcastRoomState(room);
+        scheduleBotRunItTwiceDecisions(roomId);
+        scheduleRunItTwiceTimer(roomId);
+        return;
+      }
+    }
+
     const deck = roomManager.getDeck(roomId);
     if (!deck) return;
     advancePhase(room, deck);
@@ -1080,16 +1127,10 @@ function progressGame(roomId: string) {
       const isRunout = fullAllInRunout || lastManRunout;
 
       if (isRunout) {
-        room.gameState.currentPlayerSeat = null;
-        room.gameState.actionDeadline = null;
-
-        // Auto-check the last 'playing' player so betting round completes cleanly
-        if (lastManRunout) {
-          const lastPlayer = room.players.find((p) => p.status === 'playing');
-          if (lastPlayer) lastPlayer.hasActedThisRound = true;
-        }
-
-        // Reveal all active players' hole cards
+        // currentPlayerSeat/actionDeadline are already null (advancePhase sets
+        // them for a runout) — Run It Twice, if eligible, was already offered
+        // the moment this runout was first detected, before this street was
+        // dealt. Reveal all active players' hole cards for this street.
         // Exception: Drawmaha never reveals mid-hand (split pot + draw phase confusion)
         const isDrawmaha = room.gameState.variant === 'drawmaha' || room.gameState.variant === 'drawmaha-pl';
         if (!isDrawmaha) {
@@ -1100,19 +1141,6 @@ function progressGame(roomId: string) {
             io.to(roomId).emit('game:all-in-reveal', revealPayload);
           }
         }
-
-        // Offer Run It Twice exactly once per hand, right when the runout is
-        // first detected (canOfferRunItTwice flips runItTwiceOffered so this
-        // block won't ask again as the runout auto-advances further streets).
-        if (canOfferRunItTwice(room)) {
-          initRunItTwiceVote(room, RUN_IT_TWICE_DECIDE_MS);
-          broadcastRoomState(room);
-          scheduleBotRunItTwiceDecisions(roomId);
-          scheduleRunItTwiceTimer(roomId);
-          return;
-        }
-
-        broadcastRoomState(room);
       }
 
       const delay = fullAllInRunout ? 3500 : 1500;
