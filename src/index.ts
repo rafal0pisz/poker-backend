@@ -1496,7 +1496,9 @@ io.on('connection', (socket) => {
     callback?.({ ok: true });
     broadcastRoomState(room);
 
-    if (isRunItTwiceVoteComplete(room)) {
+    // Unanimous acceptance is required, so a single decline already decides
+    // the outcome — no reason to keep waiting on players who haven't voted yet.
+    if (!payload.accept || isRunItTwiceVoteComplete(room)) {
       withRoomLock(roomId, () => resolveRunItTwiceVote(roomId));
     }
   });
