@@ -26,12 +26,18 @@ import {
   recordRunItTwiceDecision,
   isRunItTwiceVoteComplete,
   didAllAcceptRunItTwice,
-  finishHandRunItTwice,
+  prepareRunItTwiceBoards,
+  ritPotShareForBoard,
+  dealNextRitCard,
+  evaluateBoardPots,
+  finalizeRunItTwiceHand,
 } from './game-engine.js';
 import type {
   ClientToServerEvents,
   GameVariant,
+  Player,
   ServerToClientEvents,
+  SidePot,
   SocketData,
   Room,
 } from './types.js';
@@ -355,23 +361,8 @@ function resolveRunItTwiceVote(roomId: string) {
   room.gameState.runItTwiceState = undefined;
 
   if (accepted) {
-    const deck = roomManager.getDeck(roomId);
-    if (!deck) return;
-    const result = finishHandRunItTwice(room, deck);
-    room.gameState.lastHandResult = result;
-    updatePlayerStats(room, result);
-    broadcastRoomState(room);
-    io.to(roomId).emit('game:hand-result', result);
     emitSystemMessage(roomId, '🎲 Run It Twice — dealing two boards!');
-    const desc = describeHandResult(room);
-    if (desc) emitSystemMessage(roomId, desc);
-
-    clearActionTimer(roomId);
-    setTimeout(() => {
-      const r = roomManager.getRoom(roomId);
-      if (r && applyPendingChips(r)) broadcastRoomState(r);
-      tryStartNextHand(roomId);
-    }, 8000); // a bit longer than the normal result delay — two boards to read
+    startRunItTwiceReveal(roomId);
     return;
   }
 
@@ -385,6 +376,109 @@ function resolveRunItTwiceVote(roomId: string) {
   const delay = fullAllInRunout ? 3500 : 1500;
   const gen = getRoomGen(roomId);
   setTimeout(() => { if (getRoomGen(roomId) === gen) progressGame(roomId); }, delay);
+}
+
+// ── Run It Twice: staged, timed reveal ──────────────────────────────────
+// Board A is dealt to completion (one card at a time, with the same pacing
+// as a normal all-in runout) before board B starts — never both at once.
+// evalResults holds pokersolver Hand objects and Maps, neither JSON-safe
+// nor meant for clients, so it lives here server-side, keyed by room, and
+// never touches room.gameState (which does get broadcast).
+const ritContext = new Map<string, {
+  remaining: Player[];
+  allPots: SidePot[];
+  evalResults: [ReturnType<typeof evaluateBoardPots> | null, ReturnType<typeof evaluateBoardPots> | null];
+}>();
+
+const RIT_CARD_DELAY_MS = 1400; // pause between individual card reveals — matches a normal all-in runout's pace
+const RIT_BOARD_HOLD_MS = 2200; // pause on a just-completed board before moving on (or finishing)
+
+function startRunItTwiceReveal(roomId: string) {
+  const room = roomManager.getRoom(roomId);
+  if (!room?.gameState) return;
+
+  const { remaining, allPots } = prepareRunItTwiceBoards(room);
+  const baseCards = [...room.gameState.communityCards];
+
+  room.gameState.runItTwiceReveal = {
+    boards: [[...baseCards], [...baseCards]],
+    activeBoard: 0,
+    boardBreakdowns: [null, null],
+  };
+  ritContext.set(roomId, { remaining, allPots, evalResults: [null, null] });
+
+  broadcastRoomState(room);
+
+  const gen = getRoomGen(roomId);
+  setTimeout(() => { if (getRoomGen(roomId) === gen) advanceRitReveal(roomId); }, RIT_CARD_DELAY_MS);
+}
+
+function advanceRitReveal(roomId: string) {
+  const room = roomManager.getRoom(roomId);
+  const rit = room?.gameState?.runItTwiceReveal;
+  const deck = roomManager.getDeck(roomId);
+  const ctx = ritContext.get(roomId);
+  if (!room || !room.gameState || !rit || !deck || !ctx) return;
+
+  const boardIdx = rit.activeBoard;
+  const board = rit.boards[boardIdx];
+  const dealt = dealNextRitCard(board, deck);
+  room.gameState.communityCards = board;
+
+  if (dealt && board.length < 5) {
+    broadcastRoomState(room);
+    const gen = getRoomGen(roomId);
+    setTimeout(() => { if (getRoomGen(roomId) === gen) advanceRitReveal(roomId); }, RIT_CARD_DELAY_MS);
+    return;
+  }
+
+  // Board complete (or the deck ran dry mid-deal — shouldn't happen with a
+  // 52-card deck and ≤9 players, but finish gracefully with what we have).
+  // Evaluate it now so its winner shows while the other board is still dealing.
+  const potsForBoard = ritPotShareForBoard(ctx.allPots, boardIdx);
+  const evalResult = evaluateBoardPots(room, board, ctx.remaining, potsForBoard);
+  ctx.evalResults[boardIdx] = evalResult;
+  rit.boardBreakdowns[boardIdx] = evalResult.potBreakdown;
+  broadcastRoomState(room);
+
+  const gen = getRoomGen(roomId);
+  setTimeout(() => {
+    if (getRoomGen(roomId) !== gen) return;
+    if (boardIdx === 0) {
+      const r = roomManager.getRoom(roomId);
+      if (!r?.gameState?.runItTwiceReveal) return;
+      r.gameState.runItTwiceReveal.activeBoard = 1;
+      r.gameState.communityCards = r.gameState.runItTwiceReveal.boards[1];
+      broadcastRoomState(r);
+      setTimeout(() => { if (getRoomGen(roomId) === gen) advanceRitReveal(roomId); }, RIT_CARD_DELAY_MS);
+    } else {
+      finishRitReveal(roomId);
+    }
+  }, RIT_BOARD_HOLD_MS);
+}
+
+function finishRitReveal(roomId: string) {
+  const room = roomManager.getRoom(roomId);
+  const rit = room?.gameState?.runItTwiceReveal;
+  const ctx = ritContext.get(roomId);
+  if (!room || !room.gameState || !rit || !ctx || !ctx.evalResults[0] || !ctx.evalResults[1]) return;
+  ritContext.delete(roomId);
+
+  const result = finalizeRunItTwiceHand(
+    room, ctx.remaining, ctx.allPots, rit.boards[0], rit.boards[1], ctx.evalResults[0], ctx.evalResults[1],
+  );
+  updatePlayerStats(room, result);
+  broadcastRoomState(room);
+  io.to(roomId).emit('game:hand-result', result);
+  const desc = describeHandResult(room);
+  if (desc) emitSystemMessage(roomId, desc);
+
+  clearActionTimer(roomId);
+  setTimeout(() => {
+    const r = roomManager.getRoom(roomId);
+    if (r && applyPendingChips(r)) broadcastRoomState(r);
+    tryStartNextHand(roomId);
+  }, 6000);
 }
 
 // ── Player stats update ──────────────────────────────────────────────────
@@ -1591,6 +1685,7 @@ io.on('connection', (socket) => {
     if (botTimer) { clearTimeout(botTimer); botTimers.delete(roomId); }
     clearPineappleDiscardTimer(roomId);
     clearRunItTwiceTimer(roomId);
+    ritContext.delete(roomId); // drop any in-progress reveal bookkeeping — bumpRoomGen below invalidates its timers too
     const debounceTimer = broadcastDebounceTimers.get(roomId);
     if (debounceTimer) { clearTimeout(debounceTimer); broadcastDebounceTimers.delete(roomId); }
 

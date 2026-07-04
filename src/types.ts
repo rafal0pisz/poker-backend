@@ -186,6 +186,10 @@ export interface GameState {
   // not eligible) for THIS hand — prevents re-asking on every subsequent street
   // as the all-in runout auto-advances flop → turn → river.
   runItTwiceOffered?: boolean;
+  // Present between vote acceptance and the final HandResult — the two
+  // boards are dealt one at a time, one board fully before the next, at
+  // the same pace as a normal all-in runout (see advanceRitReveal).
+  runItTwiceReveal?: RunItTwiceRevealState;
 }
 
 // ===== RUN IT TWICE =====
@@ -207,6 +211,18 @@ export interface RunItTwiceBoard {
 export interface RunItTwiceResult {
   // Always length 2 (V1 supports exactly two runs, not 3+)
   boards: RunItTwiceBoard[];
+}
+
+export interface RunItTwiceRevealState {
+  // Both boards' community cards as they're dealt — each starts as a copy
+  // of the shared pre-vote board and grows to 5 cards independently. Board 2
+  // doesn't start growing until board 1 reaches 5 and is evaluated.
+  boards: [Card[], Card[]];
+  // Which board is currently being dealt (or was just completed, during its hold pause)
+  activeBoard: 0 | 1;
+  // Flips from null to that board's pot breakdown the moment it's evaluated —
+  // lets clients show a "Board 1: Alice wins" tag while board 2 is still dealing.
+  boardBreakdowns: [PotWinBreakdown[] | null, PotWinBreakdown[] | null];
 }
 
 // ===== CHAT =====

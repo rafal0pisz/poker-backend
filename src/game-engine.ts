@@ -2096,31 +2096,64 @@ export function didAllAcceptRunItTwice(room: Room): boolean {
 }
 
 /**
- * Deals the remaining streets onto an existing partial board (3 or 4 cards),
- * burning a card before each new street — same convention as advancePhase.
- * Mutates `deck` (pops from the top). Call twice in a row on the SAME deck
- * (no reshuffle in between) to get two independent, non-overlapping runs
- * from a single shuffle — the standard "Run It Twice" protocol.
+ * Deals exactly one card onto a board that isn't at 5 cards yet, burning a
+ * card first — same convention as advancePhase. Mutates `deck` (pops from
+ * the top). Call repeatedly on the SAME deck across both boards, in order
+ * (board A to completion, then board B), for two independent,
+ * non-overlapping runs from a single shuffle — the standard "Run It Twice"
+ * protocol. Returns false when there's nothing left to deal (board already
+ * complete, or the deck ran dry) so the caller knows to stop.
  */
-function dealRemainingStreets(baseCards: Card[], deck: Card[]): Card[] {
-  const board = [...baseCards];
-  while (board.length < 5) {
-    deck.pop(); // burn
-    const next = deck.pop();
-    if (!next) break; // deck exhausted — shouldn't happen with a 52-card deck and ≤9 players
-    board.push(next);
-  }
-  return board;
+export function dealNextRitCard(board: Card[], deck: Card[]): boolean {
+  if (board.length >= 5) return false;
+  deck.pop(); // burn
+  const next = deck.pop();
+  if (!next) return false; // deck exhausted — shouldn't happen with a 52-card deck and ≤9 players
+  board.push(next);
+  return true;
+}
+
+/**
+ * Runs collectBets + builds the consolidated pot list once, up front, before
+ * either board is dealt. Must run exactly once per Run It Twice hand — the
+ * two boards then split whatever this returns, they don't recompute it.
+ */
+export function prepareRunItTwiceBoards(room: Room): { remaining: Player[]; allPots: SidePot[] } {
+  if (!room.gameState) throw new Error('No game state');
+
+  collectBets(room);
+
+  const remaining = room.players.filter((p) => p.status === 'playing' || p.status === 'all-in');
+  const rawPots: SidePot[] = room.gameState.sidePots.length > 0
+    ? [...room.gameState.sidePots]
+    : [{ amount: room.gameState.pot, eligiblePlayers: remaining.map((p) => p.sessionToken) }];
+  const remainingTokens = new Set(remaining.map((p) => p.sessionToken));
+  const allPots = consolidatePots(rawPots, remainingTokens);
+
+  return { remaining, allPots };
+}
+
+/**
+ * Halves each pot for one board's share. Odd chip goes to board A — an
+ * arbitrary but consistent house rule, same spirit as the existing
+ * "odd chip to first winner" convention used elsewhere in this file.
+ */
+export function ritPotShareForBoard(allPots: SidePot[], boardIndex: 0 | 1): SidePot[] {
+  return allPots.map((p) => ({
+    amount: boardIndex === 0 ? Math.ceil(p.amount / 2) : Math.floor(p.amount / 2),
+    eligiblePlayers: p.eligiblePlayers,
+  }));
 }
 
 /**
  * Evaluates one board's showdown and pot distribution WITHOUT touching
  * room.gameState or player.chips — used to evaluate board A and board B
- * independently before their winnings are combined and applied once.
- * `pots` amounts should already be the per-board share (e.g. half the real
- * pot), not the full pot.
+ * independently, each the moment it finishes dealing, before their
+ * winnings are combined and applied once at the very end.
+ * `pots` amounts should already be the per-board share (see
+ * ritPotShareForBoard), not the full pot.
  */
-function evaluateBoardPots(
+export function evaluateBoardPots(
   room: Room,
   board: Card[],
   remaining: Player[],
@@ -2211,42 +2244,21 @@ function evaluateBoardPots(
 }
 
 /**
- * Finishes an all-in hand by dealing the remaining streets TWICE from the
- * same (already-shuffled, never-reshuffled) deck and splitting each pot
- * 50/50 between the two boards' winners. Odd chip from each half-pot split
- * goes to board A; the standalone odd chip from splitting the pot itself
- * (when the total is odd) also goes to board A — an arbitrary but
- * consistent house rule, same spirit as the existing "odd chip to first
- * winner" convention used elsewhere in this file.
+ * Combines the two boards' ALREADY-EVALUATED results (see evaluateBoardPots,
+ * called once per board as each one finishes dealing) into the final
+ * HandResult, applies the winnings to player chips, and finalizes the hand.
+ * Both boards must be complete (5 cards) by the time this runs.
  */
-export function finishHandRunItTwice(room: Room, deck: Card[]): HandResult {
+export function finalizeRunItTwiceHand(
+  room: Room,
+  remaining: Player[],
+  allPots: SidePot[],
+  boardA: Card[],
+  boardB: Card[],
+  evalA: ReturnType<typeof evaluateBoardPots>,
+  evalB: ReturnType<typeof evaluateBoardPots>,
+): HandResult {
   if (!room.gameState) throw new Error('No game state');
-
-  collectBets(room);
-
-  const remaining = room.players.filter((p) => p.status === 'playing' || p.status === 'all-in');
-
-  const rawPots: SidePot[] = room.gameState.sidePots.length > 0
-    ? [...room.gameState.sidePots]
-    : [{ amount: room.gameState.pot, eligiblePlayers: remaining.map((p) => p.sessionToken) }];
-  const remainingTokens = new Set(remaining.map((p) => p.sessionToken));
-  const allPots = consolidatePots(rawPots, remainingTokens);
-
-  const baseCards = [...room.gameState.communityCards];
-  const boardA = dealRemainingStreets(baseCards, deck);
-  const boardB = dealRemainingStreets(baseCards, deck);
-
-  const potsA: SidePot[] = allPots.map((p) => ({
-    amount: Math.ceil(p.amount / 2), // odd chip → board A
-    eligiblePlayers: p.eligiblePlayers,
-  }));
-  const potsB: SidePot[] = allPots.map((p) => ({
-    amount: Math.floor(p.amount / 2),
-    eligiblePlayers: p.eligiblePlayers,
-  }));
-
-  const evalA = evaluateBoardPots(room, boardA, remaining, potsA);
-  const evalB = evaluateBoardPots(room, boardB, remaining, potsB);
 
   const combined = new Map<string, { amount: number; handDescription?: string }>();
   for (const [token, w] of evalA.winnings) combined.set(token, { ...w });
@@ -2312,6 +2324,7 @@ export function finishHandRunItTwice(room: Room, deck: Card[]): HandResult {
   room.gameState.pot = 0;
   room.gameState.sidePots = [];
   room.gameState.runItTwiceState = undefined;
+  room.gameState.runItTwiceReveal = undefined;
 
   result.playerStacks = room.players
     .filter((p) => p.status !== 'spectator')
