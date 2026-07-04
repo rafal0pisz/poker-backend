@@ -58,6 +58,10 @@ export interface Player {
   // Time Bank uses left this session (starts at 2 — see callTime in
   // game-engine.ts). Undefined means the full allowance is still available.
   timeBankUsesLeft?: number;
+  // True once Time Bank has been called during the current hand — blocks a
+  // second call until startNewHand resets it. Distinct from timeBankUsesLeft,
+  // which persists across hands for the whole session.
+  timeBankUsedThisHand?: boolean;
 }
 
 export interface RoomSettings {
@@ -68,7 +72,9 @@ export interface RoomSettings {
   actionTimeoutSec: 15 | 30 | 60;
   tableColor?: string;
   theme?: 'classic' | 'sage' | 'amber';
-  // Admin-controlled: whether players can call +30s Time Bank (2x per session)
+  // Admin-controlled: whether players can call +30s Time Bank (2x per session).
+  // Defaults to ON — undefined/missing means enabled. Only an explicit `false`
+  // (set via admin:set-time-bank-enabled) turns it off.
   timeBankEnabled?: boolean;
 }
 

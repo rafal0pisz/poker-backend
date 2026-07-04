@@ -205,6 +205,7 @@ export function startNewHand(room: Room): { deck: Card[] } {
     player.hasActedThisRound = false;
     player.holeCards = undefined;
     player.pendingAction = null;
+    player.timeBankUsedThisHand = false;
 
     if (
       player.status === 'sitting-out' ||
@@ -563,7 +564,7 @@ const TIME_BANK_INCREMENT_MS = 30_000;
 
 export function callTime(room: Room, sessionToken: string): { ok: true } | { ok: false; error: string } {
   if (!room.gameState) return { ok: false, error: 'Game not started' };
-  if (!room.settings.timeBankEnabled) return { ok: false, error: 'Time Bank is not enabled' };
+  if (room.settings.timeBankEnabled === false) return { ok: false, error: 'Time Bank is not enabled' };
 
   const player = room.players.find((p) => p.sessionToken === sessionToken);
   if (!player) return { ok: false, error: 'Player not found' };
@@ -573,10 +574,12 @@ export function callTime(room: Room, sessionToken: string): { ok: true } | { ok:
 
   const usesLeft = player.timeBankUsesLeft ?? TIME_BANK_MAX_USES;
   if (usesLeft <= 0) return { ok: false, error: 'No Time Bank left' };
+  if (player.timeBankUsedThisHand) return { ok: false, error: 'Time Bank already used this hand' };
 
   room.gameState.actionDeadline += TIME_BANK_INCREMENT_MS;
   room.gameState.timeBankActive = true;
   player.timeBankUsesLeft = usesLeft - 1;
+  player.timeBankUsedThisHand = true;
 
   return { ok: true };
 }

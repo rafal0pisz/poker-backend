@@ -257,7 +257,7 @@ function scheduleActionTimer(roomId: string) {
   if (!room || !room.gameState) return;
 
   const { currentPlayerSeat, actionDeadline, currentBet, phase } = room.gameState;
-  if (!currentPlayerSeat || !actionDeadline || phase === 'showdown' || phase === 'pineapple-discard' || phase === 'draw') return;
+  if (currentPlayerSeat === null || !actionDeadline || phase === 'showdown' || phase === 'pineapple-discard' || phase === 'draw') return;
 
   const delay = Math.max(0, actionDeadline - Date.now());
 
@@ -1342,7 +1342,7 @@ io.on('connection', (socket) => {
 
     if (tryStartNextHand(roomId)) {
       emitSystemMessage(roomId, '🎰 Game started');
-      if (room.settings.timeBankEnabled) {
+      if (room.settings.timeBankEnabled !== false) {
         emitSystemMessage(roomId, '⏱️ Time Bank is on — each player can call +Time twice this session, +30 seconds each time.');
       }
       callback?.({ ok: true });
