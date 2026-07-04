@@ -21,6 +21,12 @@ import {
   initPineappleDiscardState,
   isRevealPhaseComplete,
   getNextDecidingPlayer,
+  canOfferRunItTwice,
+  initRunItTwiceVote,
+  recordRunItTwiceDecision,
+  isRunItTwiceVoteComplete,
+  didAllAcceptRunItTwice,
+  finishHandRunItTwice,
 } from './game-engine.js';
 import type {
   ClientToServerEvents,
@@ -250,6 +256,101 @@ function scheduleActionTimer(roomId: string) {
 // Draw submit timers — auto stand-pat when draw phase times out
 const drawSubmitTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const pineappleDiscardTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+// Run It Twice — how long humans get to accept/decline an all-in runout vote
+const RUN_IT_TWICE_DECIDE_MS = 10_000;
+const runItTwiceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function clearRunItTwiceTimer(roomId: string) {
+  const t = runItTwiceTimers.get(roomId);
+  if (t) { clearTimeout(t); runItTwiceTimers.delete(roomId); }
+}
+
+function scheduleRunItTwiceTimer(roomId: string) {
+  clearRunItTwiceTimer(roomId);
+  const room = roomManager.getRoom(roomId);
+  const deadline = room?.gameState?.runItTwiceState?.deadline;
+  if (!deadline) return;
+  const delay = Math.max(0, deadline - Date.now());
+  const timer = setTimeout(() => {
+    runItTwiceTimers.delete(roomId);
+    withRoomLock(roomId, () => resolveRunItTwiceVote(roomId));
+  }, delay + 300);
+  runItTwiceTimers.set(roomId, timer);
+}
+
+/**
+ * Bots always accept Run It Twice — makes bot/demo rooms show off the
+ * feature instead of stalling on a vote nobody will answer.
+ */
+function scheduleBotRunItTwiceDecisions(roomId: string) {
+  const room = roomManager.getRoom(roomId);
+  const rit = room?.gameState?.runItTwiceState;
+  if (!room || !rit) return;
+
+  const bots = room.players.filter(
+    (p) => (p as any).isBot && rit.decisions[p.sessionToken] === null,
+  );
+
+  bots.forEach((bot, i) => {
+    const delay = 600 + i * 400 + Math.floor(Math.random() * 500);
+    setTimeout(() => {
+      const r = roomManager.getRoom(roomId);
+      if (!r?.gameState?.runItTwiceState) return;
+      const result = recordRunItTwiceDecision(r, bot.sessionToken, true);
+      if (!result.ok) return;
+      broadcastRoomState(r);
+      if (isRunItTwiceVoteComplete(r)) {
+        withRoomLock(roomId, () => resolveRunItTwiceVote(roomId));
+      }
+    }, delay);
+  });
+}
+
+/**
+ * Resolves an open Run It Twice vote — called when everyone has decided, or
+ * when the decide-timer fires (undecided players count as a decline).
+ */
+function resolveRunItTwiceVote(roomId: string) {
+  const room = roomManager.getRoom(roomId);
+  if (!room?.gameState?.runItTwiceState) return;
+  clearRunItTwiceTimer(roomId);
+
+  const accepted = didAllAcceptRunItTwice(room);
+  room.gameState.runItTwiceState = undefined;
+
+  if (accepted) {
+    const deck = roomManager.getDeck(roomId);
+    if (!deck) return;
+    const result = finishHandRunItTwice(room, deck);
+    room.gameState.lastHandResult = result;
+    updatePlayerStats(room, result);
+    broadcastRoomState(room);
+    io.to(roomId).emit('game:hand-result', result);
+    emitSystemMessage(roomId, '🎲 Run It Twice — dealing two boards!');
+    const desc = describeHandResult(room);
+    if (desc) emitSystemMessage(roomId, desc);
+
+    clearActionTimer(roomId);
+    setTimeout(() => {
+      const r = roomManager.getRoom(roomId);
+      if (r && applyPendingChips(r)) broadcastRoomState(r);
+      tryStartNextHand(roomId);
+    }, 8000); // a bit longer than the normal result delay — two boards to read
+    return;
+  }
+
+  // Declined or timed out — fall back to the normal single-board runout,
+  // exactly as if Run It Twice had never been offered.
+  emitSystemMessage(roomId, 'Board runs once');
+  broadcastRoomState(room);
+  const allInCount = room.players.filter((p) => p.status === 'all-in').length;
+  const playingCount = room.players.filter((p) => p.status === 'playing').length;
+  const fullAllInRunout = playingCount === 0 && allInCount >= 2;
+  const delay = fullAllInRunout ? 3500 : 1500;
+  const gen = getRoomGen(roomId);
+  setTimeout(() => { if (getRoomGen(roomId) === gen) progressGame(roomId); }, delay);
+}
 
 // ── Player stats update ──────────────────────────────────────────────────
 function updatePlayerStats(room: Room, result: import('./types.js').HandResult): void {
@@ -861,6 +962,18 @@ function progressGame(roomId: string) {
             io.to(roomId).emit('game:all-in-reveal', revealPayload);
           }
         }
+
+        // Offer Run It Twice exactly once per hand, right when the runout is
+        // first detected (canOfferRunItTwice flips runItTwiceOffered so this
+        // block won't ask again as the runout auto-advances further streets).
+        if (canOfferRunItTwice(room)) {
+          initRunItTwiceVote(room, RUN_IT_TWICE_DECIDE_MS);
+          broadcastRoomState(room);
+          scheduleBotRunItTwiceDecisions(roomId);
+          scheduleRunItTwiceTimer(roomId);
+          return;
+        }
+
         broadcastRoomState(room);
       }
 
@@ -1201,6 +1314,27 @@ io.on('connection', (socket) => {
     advanceRevealPhase(roomId);
   });
 
+  // ===== RUN IT TWICE: player votes on an all-in runout =====
+  socket.on('game:run-it-twice-decide', (payload, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) {
+      return callback?.({ ok: false, error: 'No session' });
+    }
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback?.({ ok: false, error: 'Room not found' });
+
+    const result = recordRunItTwiceDecision(room, sessionToken, payload.accept);
+    if (!result.ok) return callback?.({ ok: false, error: result.error });
+
+    callback?.({ ok: true });
+    broadcastRoomState(room);
+
+    if (isRunItTwiceVoteComplete(room)) {
+      withRoomLock(roomId, () => resolveRunItTwiceVote(roomId));
+    }
+  });
+
   socket.on('game:sit-out', () => {
     const sessionToken = socket.data.sessionToken;
     const roomId = socket.data.roomId;
@@ -1412,6 +1546,7 @@ io.on('connection', (socket) => {
     const botTimer = botTimers.get(roomId);
     if (botTimer) { clearTimeout(botTimer); botTimers.delete(roomId); }
     clearPineappleDiscardTimer(roomId);
+    clearRunItTwiceTimer(roomId);
     const debounceTimer = broadcastDebounceTimers.get(roomId);
     if (debounceTimer) { clearTimeout(debounceTimer); broadcastDebounceTimers.delete(roomId); }
 

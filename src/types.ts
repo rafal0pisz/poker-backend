@@ -102,6 +102,8 @@ export interface HandResult {
   potBreakdown?: PotWinBreakdown[];
   // Players who reached 0 chips as a result of this hand (busted out)
   eliminatedTokens?: string[];
+  // Present when the table ran the board twice on an all-in
+  runItTwiceResult?: RunItTwiceResult;
 }
 
 export interface PotWinBreakdown {
@@ -177,6 +179,33 @@ export interface GameState {
   drawState?: DrawState;
   // Only present during Pineapple Classic pineapple-discard phase
   pineappleDiscardState?: PineappleDiscardState;
+  // Present while an all-in "Run It Twice?" vote is open
+  runItTwiceState?: RunItTwiceState;
+  // Set once the Run It Twice question has been asked (accepted, declined, or
+  // not eligible) for THIS hand — prevents re-asking on every subsequent street
+  // as the all-in runout auto-advances flop → turn → river.
+  runItTwiceOffered?: boolean;
+}
+
+// ===== RUN IT TWICE =====
+
+export interface RunItTwiceState {
+  // sessionTokens of players still in the hand (playing or all-in) who get a vote.
+  // Unanimous acceptance is required — one decline or timeout runs the board once.
+  eligiblePlayers: string[];
+  // null = not yet decided
+  decisions: Record<string, boolean | null>;
+  deadline: number | null;
+}
+
+export interface RunItTwiceBoard {
+  communityCards: Card[];
+  potBreakdown: PotWinBreakdown[];
+}
+
+export interface RunItTwiceResult {
+  // Always length 2 (V1 supports exactly two runs, not 3+)
+  boards: RunItTwiceBoard[];
 }
 
 // ===== CHAT =====
@@ -286,6 +315,12 @@ export interface ClientToServerEvents {
 
   // Drawmaha — Reveal phase: accept or reject open card
   'game:draw-decide': (
+    payload: { accept: boolean },
+    callback?: (response: { ok: boolean; error?: string }) => void,
+  ) => void;
+
+  // Run It Twice — vote on an all-in runout
+  'game:run-it-twice-decide': (
     payload: { accept: boolean },
     callback?: (response: { ok: boolean; error?: string }) => void,
   ) => void;

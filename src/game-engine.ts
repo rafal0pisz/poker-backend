@@ -12,6 +12,7 @@ import type {
   Player,
   PotWinBreakdown,
   Room,
+  RunItTwiceState,
   SidePot,
 } from './types.js';
 
@@ -929,7 +930,10 @@ export function finalizeOmahaHlHand(room: Room): HandResult {
     winningCards: [],
     boardCards: room.gameState.communityCards ?? [],
     handNumber: room.gameState.handNumber,
-    totalPot: room.gameState.pot + room.gameState.sidePots.reduce((s, sp) => s + sp.amount, 0),
+    // NOTE: room.gameState.pot is kept in sync as a mirror of sidePots.reduce(...)
+    // by collectBets() — summing both here would double-count. sidePots alone
+    // is the source of truth for the actual chip total.
+    totalPot: room.gameState.sidePots.reduce((s, sp) => s + sp.amount, 0),
     variant: room.gameState.variant,
   };
 
@@ -1236,7 +1240,10 @@ export function finalizeDrawmahaHand(room: Room): HandResult {
     winningCards: [],
     boardCards: room.gameState.communityCards ?? [],
     handNumber: room.gameState.handNumber,
-    totalPot: room.gameState.pot + room.gameState.sidePots.reduce((s, sp) => s + sp.amount, 0),
+    // NOTE: room.gameState.pot is kept in sync as a mirror of sidePots.reduce(...)
+    // by collectBets() — summing both here would double-count. sidePots alone
+    // is the source of truth for the actual chip total.
+    totalPot: room.gameState.sidePots.reduce((s, sp) => s + sp.amount, 0),
     variant: room.gameState.variant,
   };
 
@@ -1769,7 +1776,10 @@ export function finishHand(room: Room): HandResult {
     winningCards: [],
     boardCards: room.gameState.communityCards ?? [],
     handNumber: room.gameState.handNumber,
-    totalPot: room.gameState.pot + room.gameState.sidePots.reduce((s, sp) => s + sp.amount, 0),
+    // NOTE: room.gameState.pot is kept in sync as a mirror of sidePots.reduce(...)
+    // by collectBets() — summing both here would double-count. sidePots alone
+    // is the source of truth for the actual chip total.
+    totalPot: room.gameState.sidePots.reduce((s, sp) => s + sp.amount, 0),
     variant: room.gameState.variant,
   };
 
@@ -1961,6 +1971,297 @@ export function finishHand(room: Room): HandResult {
   result.playerStacks = room.players
     .filter((p) => p.status !== 'spectator')
     .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, chips: p.chips }));
+  return result;
+}
+
+// ===== RUN IT TWICE =====
+//
+// Only offered for variants with a single, simple showdown evaluation
+// (Texas / Omaha / Omaha-PL / Omaha5 / Pineapple). Drawmaha and Omaha Hi-Lo
+// already split each pot into two halves by their own rules (Omaha+Draw,
+// High+Low) — stacking a second board split on top of that would need its
+// own dedicated design, so for now those variants keep the existing
+// single-board runout behavior.
+const RUN_IT_TWICE_INELIGIBLE_VARIANTS: GameVariant[] = ['drawmaha', 'drawmaha-pl', 'omaha-hl'];
+
+/**
+ * True exactly once per hand, at the moment an all-in runout is first
+ * detected — the caller is responsible for setting `runItTwiceOffered` via
+ * initRunItTwiceVote so this returns false on subsequent street advances of
+ * the same hand.
+ */
+export function canOfferRunItTwice(room: Room): boolean {
+  if (!room.gameState) return false;
+  if (room.gameState.runItTwiceOffered) return false;
+  if (RUN_IT_TWICE_INELIGIBLE_VARIANTS.includes(room.gameState.variant)) return false;
+  if (room.gameState.communityCards.length >= 5) return false; // nothing left to run twice
+  const stillInHand = room.players.filter((p) => p.status === 'playing' || p.status === 'all-in');
+  return stillInHand.length >= 2;
+}
+
+export function initRunItTwiceVote(room: Room, decideMs: number): void {
+  if (!room.gameState) return;
+  const stillInHand = room.players.filter((p) => p.status === 'playing' || p.status === 'all-in');
+  const decisions: Record<string, boolean | null> = {};
+  for (const p of stillInHand) decisions[p.sessionToken] = null;
+
+  const state: RunItTwiceState = {
+    eligiblePlayers: stillInHand.map((p) => p.sessionToken),
+    decisions,
+    deadline: Date.now() + decideMs,
+  };
+  room.gameState.runItTwiceOffered = true;
+  room.gameState.runItTwiceState = state;
+}
+
+export function recordRunItTwiceDecision(
+  room: Room,
+  sessionToken: string,
+  accept: boolean,
+): { ok: true } | { ok: false; error: string } {
+  const rit = room.gameState?.runItTwiceState;
+  if (!rit) return { ok: false, error: 'No Run It Twice vote in progress' };
+  if (!(sessionToken in rit.decisions)) return { ok: false, error: 'You are not part of this hand' };
+  if (rit.decisions[sessionToken] !== null) return { ok: false, error: 'Already voted' };
+  rit.decisions[sessionToken] = accept;
+  return { ok: true };
+}
+
+export function isRunItTwiceVoteComplete(room: Room): boolean {
+  const rit = room.gameState?.runItTwiceState;
+  if (!rit) return false;
+  return Object.values(rit.decisions).every((d) => d !== null);
+}
+
+/** Unanimous acceptance required — any decline, or any still-undecided (timeout), means no. */
+export function didAllAcceptRunItTwice(room: Room): boolean {
+  const rit = room.gameState?.runItTwiceState;
+  if (!rit) return false;
+  return Object.values(rit.decisions).every((d) => d === true);
+}
+
+/**
+ * Deals the remaining streets onto an existing partial board (3 or 4 cards),
+ * burning a card before each new street — same convention as advancePhase.
+ * Mutates `deck` (pops from the top). Call twice in a row on the SAME deck
+ * (no reshuffle in between) to get two independent, non-overlapping runs
+ * from a single shuffle — the standard "Run It Twice" protocol.
+ */
+function dealRemainingStreets(baseCards: Card[], deck: Card[]): Card[] {
+  const board = [...baseCards];
+  while (board.length < 5) {
+    deck.pop(); // burn
+    const next = deck.pop();
+    if (!next) break; // deck exhausted — shouldn't happen with a 52-card deck and ≤9 players
+    board.push(next);
+  }
+  return board;
+}
+
+/**
+ * Evaluates one board's showdown and pot distribution WITHOUT touching
+ * room.gameState or player.chips — used to evaluate board A and board B
+ * independently before their winnings are combined and applied once.
+ * `pots` amounts should already be the per-board share (e.g. half the real
+ * pot), not the full pot.
+ */
+function evaluateBoardPots(
+  room: Room,
+  board: Card[],
+  remaining: Player[],
+  pots: SidePot[],
+): {
+  winnings: Map<string, { amount: number; handDescription?: string }>;
+  potBreakdown: PotWinBreakdown[];
+  winningCards: Card[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  evaluations: Map<string, { hand: any; winningHoleCards?: Card[]; winningBoardCards?: Card[] }>;
+} {
+  const variant = room.gameState!.variant;
+
+  const evaluateHand = (
+    player: Player,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ): { hand: any; winningHoleCards?: Card[]; winningBoardCards?: Card[] } => {
+    const holeCards = player.holeCards || [];
+    if (variant === 'omaha' || variant === 'omaha-pl' || variant === 'omaha5') {
+      const { hand, holeUsed, boardUsed } = solveOmaha(holeCards, board);
+      return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };
+    }
+    if (variant === 'pineapple' || variant === 'pineapple-classic') {
+      const { hand, holeUsed, boardUsed } = solvePineapple(holeCards, board);
+      return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };
+    }
+    const { hand, winningCards } = solveTexas(holeCards, board);
+    return { hand, winningHoleCards: winningCards, winningBoardCards: [] };
+  };
+
+  const evaluations = new Map<string, ReturnType<typeof evaluateHand>>();
+  for (const p of remaining) evaluations.set(p.sessionToken, evaluateHand(p));
+
+  const winnings = new Map<string, { amount: number; handDescription?: string }>();
+  const potBreakdown: PotWinBreakdown[] = [];
+  let winningCards: Card[] = [];
+
+  const addWinning = (token: string, amount: number, desc?: string) => {
+    if (amount <= 0) return;
+    const existing = winnings.get(token);
+    if (existing) existing.amount += amount;
+    else winnings.set(token, { amount, handDescription: desc });
+  };
+
+  for (let potIndex = 0; potIndex < pots.length; potIndex++) {
+    const pot = pots[potIndex];
+    let eligible = remaining.filter((p) => pot.eligiblePlayers.includes(p.sessionToken));
+    if (pot.amount === 0) {
+      // Push an empty entry (not a `continue`) so evalA/evalB.potBreakdown stay
+      // index-aligned with `pots` — the caller zips board A and board B by
+      // position (e.g. an odd 1-chip side pot goes entirely to board A,
+      // leaving board B's half at 0 for that same pot index).
+      potBreakdown.push({ label: potIndex === 0 ? 'Main pot' : `Side pot ${potIndex}`, amount: 0, winners: [] });
+      continue;
+    }
+    if (eligible.length === 0) eligible = remaining; // defensive — shouldn't happen
+
+    const hands = eligible.map((p) => ({ sessionToken: p.sessionToken, hand: evaluations.get(p.sessionToken)!.hand }));
+    const winnerHands = Hand.winners(hands.map((h) => h.hand));
+    const winningTokens = hands.filter((h) => winnerHands.includes(h.hand)).map((h) => h.sessionToken);
+
+    if (potIndex === 0 && winningCards.length === 0) {
+      const firstEval = evaluations.get(winningTokens[0]);
+      if (firstEval?.winningHoleCards) {
+        winningCards = [...firstEval.winningHoleCards, ...(firstEval.winningBoardCards ?? [])];
+      }
+    }
+
+    const share = Math.floor(pot.amount / winningTokens.length);
+    const remainder = pot.amount - share * winningTokens.length;
+    const potWinners: PotWinBreakdown['winners'] = [];
+
+    winningTokens.forEach((token, i) => {
+      const amt = share + (i === 0 ? remainder : 0);
+      const desc = evaluations.get(token)!.hand.descr;
+      addWinning(token, amt, desc);
+      potWinners.push({ sessionToken: token, amount: amt, handDescription: desc });
+    });
+
+    potBreakdown.push({
+      label: potIndex === 0 ? 'Main pot' : `Side pot ${potIndex}`,
+      amount: pot.amount,
+      winners: potWinners,
+    });
+  }
+
+  return { winnings, potBreakdown, winningCards, evaluations };
+}
+
+/**
+ * Finishes an all-in hand by dealing the remaining streets TWICE from the
+ * same (already-shuffled, never-reshuffled) deck and splitting each pot
+ * 50/50 between the two boards' winners. Odd chip from each half-pot split
+ * goes to board A; the standalone odd chip from splitting the pot itself
+ * (when the total is odd) also goes to board A — an arbitrary but
+ * consistent house rule, same spirit as the existing "odd chip to first
+ * winner" convention used elsewhere in this file.
+ */
+export function finishHandRunItTwice(room: Room, deck: Card[]): HandResult {
+  if (!room.gameState) throw new Error('No game state');
+
+  collectBets(room);
+
+  const remaining = room.players.filter((p) => p.status === 'playing' || p.status === 'all-in');
+
+  const rawPots: SidePot[] = room.gameState.sidePots.length > 0
+    ? [...room.gameState.sidePots]
+    : [{ amount: room.gameState.pot, eligiblePlayers: remaining.map((p) => p.sessionToken) }];
+  const remainingTokens = new Set(remaining.map((p) => p.sessionToken));
+  const allPots = consolidatePots(rawPots, remainingTokens);
+
+  const baseCards = [...room.gameState.communityCards];
+  const boardA = dealRemainingStreets(baseCards, deck);
+  const boardB = dealRemainingStreets(baseCards, deck);
+
+  const potsA: SidePot[] = allPots.map((p) => ({
+    amount: Math.ceil(p.amount / 2), // odd chip → board A
+    eligiblePlayers: p.eligiblePlayers,
+  }));
+  const potsB: SidePot[] = allPots.map((p) => ({
+    amount: Math.floor(p.amount / 2),
+    eligiblePlayers: p.eligiblePlayers,
+  }));
+
+  const evalA = evaluateBoardPots(room, boardA, remaining, potsA);
+  const evalB = evaluateBoardPots(room, boardB, remaining, potsB);
+
+  const combined = new Map<string, { amount: number; handDescription?: string }>();
+  for (const [token, w] of evalA.winnings) combined.set(token, { ...w });
+  for (const [token, w] of evalB.winnings) {
+    const existing = combined.get(token);
+    if (existing) existing.amount += w.amount;
+    else combined.set(token, { ...w });
+  }
+
+  for (const [token, w] of combined) {
+    const player = room.players.find((p) => p.sessionToken === token);
+    if (player) player.chips += w.amount;
+  }
+
+  const totalPot = allPots.reduce((s, p) => s + p.amount, 0);
+
+  const result: HandResult = {
+    winnings: [...combined].map(([sessionToken, w]) => ({ sessionToken, amount: w.amount })),
+    showdownCards: remaining.map((p) => ({
+      sessionToken: p.sessionToken,
+      cards: p.holeCards ?? [],
+      handName: evalA.evaluations.get(p.sessionToken)?.hand?.name ?? '',
+    })),
+    winningCards: evalA.winningCards,
+    boardCards: boardA,
+    handNumber: room.gameState.handNumber,
+    totalPot,
+    variant: room.gameState.variant,
+    runItTwiceResult: {
+      boards: [
+        { communityCards: boardA, potBreakdown: evalA.potBreakdown },
+        { communityCards: boardB, potBreakdown: evalB.potBreakdown },
+      ],
+    },
+  };
+
+  if (allPots.length > 1) {
+    result.potBreakdown = allPots.map((pot, i) => ({
+      label: i === 0 ? 'Main pot' : `Side pot ${i}`,
+      amount: pot.amount,
+      winners: [...(evalA.potBreakdown[i]?.winners ?? []), ...(evalB.potBreakdown[i]?.winners ?? [])],
+    }));
+  }
+
+  for (const w of result.winnings) {
+    const player = room.players.find((p) => p.sessionToken === w.sessionToken);
+    if (player) w.netAmount = Math.max(0, w.amount - (player.totalBetInHand || 0));
+  }
+
+  result.eliminatedTokens = room.players
+    .filter((p) =>
+      p.chips === 0 &&
+      (p.status === 'playing' || p.status === 'all-in' || p.status === 'folded') &&
+      !result.winnings.some((w) => w.sessionToken === p.sessionToken),
+    )
+    .map((p) => p.sessionToken);
+
+  room.gameState.communityCards = boardA;
+  room.gameState.phase = 'showdown';
+  room.gameState.currentPlayerSeat = null;
+  room.gameState.actionDeadline = null;
+  room.gameState.lastHandResult = result;
+  room.gameState.pot = 0;
+  room.gameState.sidePots = [];
+  room.gameState.runItTwiceState = undefined;
+
+  result.playerStacks = room.players
+    .filter((p) => p.status !== 'spectator')
+    .map((p) => ({ sessionToken: p.sessionToken, nick: p.nick, chips: p.chips }));
+
   return result;
 }
 
