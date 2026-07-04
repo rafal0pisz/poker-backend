@@ -773,12 +773,18 @@ function tryStartNextHand(roomId: string): boolean {
         (p as any).pendingSitOut = false;
       }
     }
-    const { deck } = startNewHand(room);
+    const { deck, straddle } = startNewHand(room);
     roomManager.setDeck(roomId, deck);
     broadcastRoomState(room);
     sendHoleCards(room);
     scheduleActionTimer(roomId); // preflop — first to act
     console.log(`[tryStartNextHand] Started hand #${room.gameState?.handNumber} in ${roomId}`);
+    // Straddle is easy to miss otherwise — it's a silent stack/pot change
+    // buried in a corner of the table, and it only fires whenever whoever
+    // opted in happens to land on UTG. Announce it plainly when it happens.
+    if (straddle) {
+      emitSystemMessage(roomId, `🎲 ${straddle.nick} straddles for ${straddle.amount}`);
+    }
     // Bomb Pot (and any other variant with no preflop betting round) can land
     // straight into an all-in runout at the very first street if antes bust
     // most of the table — nobody has acted yet, so nothing will call

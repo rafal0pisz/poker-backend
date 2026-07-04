@@ -197,7 +197,7 @@ export function solvePineapple(
  * Starts a new hand.
  * Shuffles deck, deals cards, posts blinds, sets first to act.
  */
-export function startNewHand(room: Room): { deck: Card[] } {
+export function startNewHand(room: Room): { deck: Card[]; straddle?: { sessionToken: string; nick: string; amount: number } } {
   for (const player of room.players) {
     player.currentBet = 0;
     player.handContribution = 0;
@@ -397,7 +397,10 @@ export function startNewHand(room: Room): { deck: Card[] } {
     lastHandResult: null,
   };
 
-  return { deck };
+  return {
+    deck,
+    straddle: straddlePosted ? { sessionToken: utgPlayer!.sessionToken, nick: utgPlayer!.nick, amount: straddleAmount } : undefined,
+  };
 }
 
 const MAX_HAND_HISTORY = 30;
