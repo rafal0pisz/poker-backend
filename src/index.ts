@@ -70,6 +70,41 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents, Record<string,
 
 const sessionToSocket = new Map<string, string>();
 
+// ── Graceful shutdown ────────────────────────────────────────────────────
+// Railway (and most container platforms) sends SIGTERM before killing the
+// old instance during a deploy. Since all game state lives only in this
+// process's memory (no persistence layer), a restart wipes every open
+// table — there's no way to preserve it. The best we can do is warn
+// connected players immediately so a sudden disconnect doesn't look like a
+// bug, then exit within the platform's grace period.
+//
+// SHUTDOWN_WARNING_MS must stay comfortably under the host's SIGTERM→SIGKILL
+// grace period or the process gets killed mid-warning. If Railway's actual
+// grace period is shorter than this, lower it.
+const SHUTDOWN_WARNING_MS = 8000;
+let isShuttingDown = false;
+
+function gracefulShutdown(signal: string) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`[shutdown] ${signal} received — warning clients, exiting in ${SHUTDOWN_WARNING_MS}ms`);
+
+  io.emit('server:maintenance', {
+    message:
+      "This server is restarting for a deploy. Any hand in progress will be cut short and this table's chips will reset — there's no way around that with how the game currently saves state. Reconnecting in a minute or two will start a fresh table.",
+    secondsUntilRestart: Math.ceil(SHUTDOWN_WARNING_MS / 1000),
+  });
+
+  setTimeout(() => {
+    console.log('[shutdown] Exiting now');
+    httpServer.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 1000); // force-exit if close() hangs on lingering sockets
+  }, SHUTDOWN_WARNING_MS);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 // Room expiry — clean up inactive rooms every 30 minutes
 // Prevents memory leak on Railway free tier (512MB RAM)
 const ROOM_EXPIRY_MS = 4 * 60 * 60 * 1000; // 4 hours
@@ -606,6 +641,8 @@ function sendHoleCards(room: Room) {
 }
 
 function tryStartNextHand(roomId: string): boolean {
+  if (isShuttingDown) return false; // don't start hands we're about to kill mid-way
+
   const room = roomManager.getRoom(roomId);
   if (!room) return false;
 
@@ -646,6 +683,13 @@ function tryStartNextHand(roomId: string): boolean {
     sendHoleCards(room);
     scheduleActionTimer(roomId); // preflop — first to act
     console.log(`[tryStartNextHand] Started hand #${room.gameState?.handNumber} in ${roomId}`);
+    // Bomb Pot (and any other variant with no preflop betting round) can land
+    // straight into an all-in runout at the very first street if antes bust
+    // most of the table — nobody has acted yet, so nothing will call
+    // progressGame otherwise. Kick it off explicitly in that case.
+    if (room.gameState && room.gameState.currentPlayerSeat === null) {
+      withRoomLock(roomId, () => progressGame(roomId));
+    }
     return true;
   } catch (err) {
     console.error('[tryStartNextHand]', err);
@@ -1415,7 +1459,7 @@ io.on('connection', (socket) => {
     const player = room.players.find((p) => p.sessionToken === sessionToken);
     if (!player) return callback?.({ ok: false, error: 'Player not found' });
 
-    const allowed: GameVariant[] = ['texas', 'omaha', 'omaha-pl', 'omaha5', 'omaha-hl', 'drawmaha', 'drawmaha-pl', 'pineapple', 'pineapple-classic'];
+    const allowed: GameVariant[] = ['texas', 'omaha', 'omaha-pl', 'omaha5', 'omaha-hl', 'drawmaha', 'drawmaha-pl', 'pineapple', 'pineapple-classic', 'bombpot'];
     if (!allowed.includes(payload.variant)) {
       return callback?.({ ok: false, error: 'Unknown variant' });
     }

@@ -7,7 +7,8 @@ export type PlayerRole = 'player' | 'vice-admin' | 'admin';
 // Texas:    2 hole cards + 5 community, best 5 of 7
 // Omaha:    4 hole cards + 5 community, must use EXACTLY 2 hole + 3 community
 // Drawmaha: 5 hole cards + draw phase after flop + 1-card reveal + split pot (Omaha half + Texas half)
-export type GameVariant = 'texas' | 'omaha' | 'omaha-pl' | 'omaha5' | 'omaha-hl' | 'drawmaha' | 'drawmaha-pl' | 'pineapple' | 'pineapple-classic';
+// Bombpot:  Hold'em rules, but no blinds/preflop betting — everyone antes 1 BB, action starts on the flop
+export type GameVariant = 'texas' | 'omaha' | 'omaha-pl' | 'omaha5' | 'omaha-hl' | 'drawmaha' | 'drawmaha-pl' | 'pineapple' | 'pineapple-classic' | 'bombpot';
 
 export type PlayerStatus =
   | 'playing'
@@ -408,6 +409,9 @@ export interface ServerToClientEvents {
   'game:all-in-reveal': (players: { sessionToken: string; nick: string; cards: Card[] }[]) => void;
   'chat:message': (message: ChatMessage) => void; // single new message
   error: (message: string) => void;
+  // Sent to every connected client when the server is about to restart
+  // (deploy) — gives players a heads-up before the connection drops.
+  'server:maintenance': (payload: { message: string; secondsUntilRestart: number }) => void;
 }
 
 export interface SocketData {

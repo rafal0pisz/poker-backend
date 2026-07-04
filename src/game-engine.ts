@@ -256,6 +256,61 @@ export function startNewHand(room: Room): { deck: Card[] } {
     }
   }
 
+  // ===== HOLD'EM BOMB POT =====
+  // No blinds, no preflop betting — every active player antes one big blind
+  // (or whatever's left of their stack, if shorter), the flop is dealt
+  // immediately, and betting starts fresh from there exactly like a normal
+  // Hold'em flop.
+  if (variant === 'bombpot') {
+    for (const player of activePlayers) {
+      const ante = Math.min(room.settings.bigBlind, player.chips);
+      player.chips -= ante;
+      player.currentBet = ante;
+      player.handContribution = (player.handContribution || 0) + ante;
+      player.totalBetInHand = ante;
+      if (player.chips === 0) player.status = 'all-in';
+    }
+
+    deck.pop(); // burn
+    const communityCards: Card[] = [deck.pop()!, deck.pop()!, deck.pop()!];
+
+    // Mirrors advancePhase's postflop first-actor logic — someone may have
+    // already busted from the ante, so re-check who can actually act.
+    const stillPlaying = activePlayers.filter((p) => p.status === 'playing');
+    const stillAllInCount = activePlayers.filter((p) => p.status === 'all-in').length;
+    let firstToActBomb: number | null;
+    if (stillPlaying.length === 0) {
+      firstToActBomb = null;
+    } else if (stillPlaying.length === 1 && stillAllInCount >= 1) {
+      stillPlaying[0].hasActedThisRound = true; // no one left to bet against — auto-check
+      firstToActBomb = null;
+    } else {
+      firstToActBomb = getNextActiveSeat(room, dealerSeat, false);
+    }
+
+    room.gameState = {
+      phase: 'flop',
+      variant,
+      communityCards,
+      pot: 0,
+      sidePots: [],
+      // Every still-'playing' player antes exactly one full big blind (anyone
+      // who couldn't cover it went all-in above, so this always matches) —
+      // matches player.currentBet so isBettingRoundComplete resolves once
+      // everyone has checked/acted, instead of reading as a permanent call owed.
+      currentBet: room.settings.bigBlind,
+      minRaise: room.settings.bigBlind,
+      dealerSeat,
+      currentPlayerSeat: firstToActBomb,
+      actionDeadline: firstToActBomb ? Date.now() + room.settings.actionTimeoutSec * 1000 : null,
+      lastAction: null,
+      handNumber,
+      lastHandResult: null,
+    };
+
+    return { deck };
+  }
+
   // Heads-up (exactly 2 active players): the dealer/button posts the small
   // blind and acts first preflop; the other player posts the big blind and
   // acts first post-flop, turn, and river. With 3+ players, SB is the seat
