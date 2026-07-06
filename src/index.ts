@@ -33,6 +33,7 @@ import {
   finalizeRunItTwiceHand,
   recordHandHistory,
   callTime,
+  isDrawmahaVariant,
 } from './game-engine.js';
 import type {
   ClientToServerEvents,
@@ -688,7 +689,10 @@ function applyPendingChips(room: Room) {
         ? pending
         : Math.max(-player.chips, pending); // can't go below 0
       player.chips = Math.max(0, player.chips + adjustment);
-      player.totalBuyIn += Math.max(0, pending);
+      // Mirror the chip change onto totalBuyIn so a removal undoes an add
+      // symmetrically — otherwise net (chips - totalBuyIn) permanently looks
+      // worse than it should after any admin chip removal.
+      player.totalBuyIn = Math.max(0, player.totalBuyIn + adjustment);
       player.pendingChipsAdjustment = 0;
       if (player.chips > 0 && (player.status === 'no-chips' || player.status === 'waiting')) {
         player.status = 'waiting';
@@ -919,7 +923,7 @@ function advanceRevealPhase(roomId: string) {
 
         // Reveal all active players' hole cards
         // Exception: Drawmaha never reveals mid-hand (split pot + draw phase confusion)
-        const isDrawmaha = room.gameState.variant === 'drawmaha' || room.gameState.variant === 'drawmaha-pl';
+        const isDrawmaha = isDrawmahaVariant(room.gameState.variant);
         if (!isDrawmaha) {
           const revealPayload = room.players
             .filter((p) => (p.status === 'all-in' || p.status === 'playing') && p.holeCards)
@@ -1015,7 +1019,7 @@ function progressGame(roomId: string) {
     if (desc) emitSystemMessage(roomId, desc);
 
     clearActionTimer(roomId); // hand over
-    const resultDelay1 = (room.gameState.variant === 'drawmaha' || room.gameState.variant === 'drawmaha-pl') ? 9000 : 6000;
+    const resultDelay1 = isDrawmahaVariant(room.gameState.variant) ? 9000 : 6000;
     setTimeout(() => {
       const r = roomManager.getRoom(roomId);
       if (r && applyPendingChips(r)) broadcastRoomState(r);
@@ -1038,7 +1042,7 @@ function progressGame(roomId: string) {
       if (desc) emitSystemMessage(roomId, desc);
 
       clearActionTimer(roomId); // hand over
-      const resultDelay2 = (room.gameState.variant === 'drawmaha' || room.gameState.variant === 'drawmaha-pl') ? 9000 : 6000;
+      const resultDelay2 = isDrawmahaVariant(room.gameState.variant) ? 9000 : 6000;
       setTimeout(() => {
         const r = roomManager.getRoom(roomId);
         if (r && applyPendingChips(r)) broadcastRoomState(r);
@@ -1056,7 +1060,7 @@ function progressGame(roomId: string) {
     const variant = room.gameState.variant;
     const headingIntoMandatoryPhase =
       room.gameState.phase === 'flop' &&
-      (variant === 'pineapple-classic' || variant === 'drawmaha' || variant === 'drawmaha-pl');
+      (variant === 'pineapple-classic' || isDrawmahaVariant(variant));
 
     if (!headingIntoMandatoryPhase) {
       const playingCount = room.players.filter((p) => p.status === 'playing').length;
@@ -1137,7 +1141,7 @@ function progressGame(roomId: string) {
         // the moment this runout was first detected, before this street was
         // dealt. Reveal all active players' hole cards for this street.
         // Exception: Drawmaha never reveals mid-hand (split pot + draw phase confusion)
-        const isDrawmaha = room.gameState.variant === 'drawmaha' || room.gameState.variant === 'drawmaha-pl';
+        const isDrawmaha = isDrawmahaVariant(room.gameState.variant);
         if (!isDrawmaha) {
           const revealPayload = room.players
             .filter((p) => (p.status === 'all-in' || p.status === 'playing') && p.holeCards)
@@ -1606,7 +1610,7 @@ io.on('connection', (socket) => {
     const player = room.players.find((p) => p.sessionToken === sessionToken);
     if (!player) return callback?.({ ok: false, error: 'Player not found' });
 
-    const allowed: GameVariant[] = ['texas', 'omaha', 'omaha-pl', 'omaha5', 'omaha-hl', 'drawmaha', 'drawmaha-pl', 'pineapple', 'pineapple-classic', 'bombpot'];
+    const allowed: GameVariant[] = ['texas', 'omaha', 'omaha-pl', 'omaha5', 'omaha-hl', 'drawmaha', 'drawmaha-pl', 'pineapple', 'pineapple-classic', 'drawmaha-bomb'];
     if (!allowed.includes(payload.variant)) {
       return callback?.({ ok: false, error: 'Unknown variant' });
     }
@@ -1969,6 +1973,9 @@ io.on('connection', (socket) => {
     } else {
       actualRemoved = Math.min(payload.amount, target.chips);
       target.chips -= actualRemoved;
+      // Mirror onto totalBuyIn so this symmetrically undoes an add-chips —
+      // otherwise net (chips - totalBuyIn) looks worse than it should.
+      target.totalBuyIn = Math.max(0, target.totalBuyIn - actualRemoved);
       if (target.chips <= 0 && target.status === 'waiting') {
         target.status = 'no-chips';
       }

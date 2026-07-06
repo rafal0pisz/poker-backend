@@ -3,6 +3,7 @@
 import { customAlphabet } from 'nanoid';
 import type { Card } from './deck.js';
 import type { Player, Room, RoomSettings, ChatMessage } from './types.js';
+import { isDrawmahaVariant } from './game-engine.js';
 
 const generateRoomId = customAlphabet('23456789ABCDEFGHJKMNPQRSTUVWXYZ', 6);
 const generateSessionToken = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 32);
@@ -372,7 +373,7 @@ class RoomManager {
       // Drawmaha: NEVER reveal cards before showdown — split pot makes mid-hand
       // reveals confusing and the draw phase would expose cards unfairly.
       const isDrawmahaPreDraw =
-        (room.gameState.variant === 'drawmaha' || room.gameState.variant === 'drawmaha-pl') &&
+        isDrawmahaVariant(room.gameState.variant) &&
         room.gameState.phase !== 'showdown';
 
       // Require at least 2 players in the hand — if only 1 all-in and everyone else folded,

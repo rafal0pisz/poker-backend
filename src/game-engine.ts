@@ -20,6 +20,13 @@ import pokersolverImport from 'pokersolver';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const { Hand } = pokersolverImport as any;
 
+// Any variant using Drawmaha's 5-card-hole / draw-phase / split-pot (Omaha +
+// Texas half) rules — 'drawmaha-bomb' is the same engine, just entered via a
+// no-blinds bomb-pot ante instead of normal blinds/preflop betting.
+export function isDrawmahaVariant(variant: GameVariant): boolean {
+  return variant === 'drawmaha' || variant === 'drawmaha-pl' || variant === 'drawmaha-bomb';
+}
+
 /**
  * Generates all C(n, k) combinations of `k` elements from `arr`.
  * Used for Omaha / Drawmaha hand evaluation.
@@ -245,7 +252,7 @@ export function startNewHand(room: Room): { deck: Card[] } {
   // Texas: 2, Omaha: 4, Drawmaha: 5
   const cardsPerPlayer = (variant === 'omaha' || variant === 'omaha-pl' || variant === 'omaha-hl') ? 4
     : (variant === 'omaha5') ? 5
-    : (variant === 'drawmaha' || variant === 'drawmaha-pl') ? 5
+    : isDrawmahaVariant(variant) ? 5
     : (variant === 'pineapple' || variant === 'pineapple-classic') ? 3
     : 2;
 
@@ -257,14 +264,16 @@ export function startNewHand(room: Room): { deck: Card[] } {
     }
   }
 
-  // ===== HOLD'EM BOMB POT =====
-  // No blinds, no preflop betting — every active player antes one big blind
+  // ===== DRAWMAHA BOMB POT =====
+  // No blinds, no preflop betting — every active player antes two big blinds
   // (or whatever's left of their stack, if shorter), the flop is dealt
-  // immediately, and betting starts fresh from there exactly like a normal
-  // Hold'em flop.
-  if (variant === 'bombpot') {
+  // immediately, and betting starts fresh from there. Everything after the
+  // flop (draw phase, split pot) follows normal Drawmaha rules via
+  // isDrawmahaVariant / finalizeDrawmahaHand.
+  if (variant === 'drawmaha-bomb') {
+    const bombAnteTotal = room.settings.bigBlind * 2;
     for (const player of activePlayers) {
-      const ante = Math.min(room.settings.bigBlind, player.chips);
+      const ante = Math.min(bombAnteTotal, player.chips);
       player.chips -= ante;
       player.currentBet = ante;
       player.handContribution = (player.handContribution || 0) + ante;
@@ -295,11 +304,11 @@ export function startNewHand(room: Room): { deck: Card[] } {
       communityCards,
       pot: 0,
       sidePots: [],
-      // Every still-'playing' player antes exactly one full big blind (anyone
+      // Every still-'playing' player antes exactly two full big blinds (anyone
       // who couldn't cover it went all-in above, so this always matches) —
       // matches player.currentBet so isBettingRoundComplete resolves once
       // everyone has checked/acted, instead of reading as a permanent call owed.
-      currentBet: room.settings.bigBlind,
+      currentBet: bombAnteTotal,
       minRaise: room.settings.bigBlind,
       dealerSeat,
       currentPlayerSeat: firstToActBomb,
@@ -526,6 +535,7 @@ export function performAction(
       }
       player.chips = 0;
       player.currentBet = allInAmount;
+      player.handContribution = (player.handContribution || 0) + totalChipsIn;
       player.totalBetInHand += totalChipsIn;
       player.status = 'all-in';
       if (allInAmount > room.gameState.currentBet) {
@@ -1787,7 +1797,7 @@ export function advancePhase(room: Room, deck: Card[]): void {
     return;
   }
 
-  if (variant === 'drawmaha' || variant === 'drawmaha-pl') {
+  if (isDrawmahaVariant(variant)) {
     const drawmahaOrder: HandPhase[] = ['preflop', 'flop', 'draw', 'turn', 'river', 'showdown'];
     const currentIdx = drawmahaOrder.indexOf(room.gameState.phase);
     nextPhase = drawmahaOrder[currentIdx + 1] ?? 'showdown';
@@ -1862,7 +1872,7 @@ export function finishHand(room: Room): HandResult {
   }
 
   // Drawmaha uses its own split-pot finisher
-  if (room.gameState.variant === 'drawmaha' || room.gameState.variant === 'drawmaha-pl') {
+  if (isDrawmahaVariant(room.gameState.variant)) {
     return finalizeDrawmahaHand(room);
   }
 
@@ -2089,7 +2099,7 @@ export function finishHand(room: Room): HandResult {
 // High+Low) — stacking a second board split on top of that would need its
 // own dedicated design, so for now those variants keep the existing
 // single-board runout behavior.
-const RUN_IT_TWICE_INELIGIBLE_VARIANTS: GameVariant[] = ['drawmaha', 'drawmaha-pl', 'omaha-hl'];
+const RUN_IT_TWICE_INELIGIBLE_VARIANTS: GameVariant[] = ['drawmaha', 'drawmaha-pl', 'drawmaha-bomb', 'omaha-hl'];
 
 /**
  * True exactly once per hand, at the moment an all-in runout is first
