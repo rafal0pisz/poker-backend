@@ -1259,6 +1259,9 @@ io.on('connection', (socket) => {
           // If they reconnect during an active hand and their turn hasn't come yet, restore
           if (result.room.gameState?.phase && player.status === 'disconnected') {
             player.status = 'waiting';
+            // A game halted for lack of eligible players never resumes on
+            // its own — try now that this player is eligible again.
+            tryStartNextHand(result.room.id);
           }
         }
       }
@@ -1539,7 +1542,10 @@ io.on('connection', (socket) => {
     const player = room.players.find((p) => p.sessionToken === sessionToken);
     if (!player) return;
 
-    const isInActiveHand = room.gameState && (player.status === 'playing' || player.status === 'all-in');
+    // Any active hand (including a player who already folded/is all-in this
+    // hand) queues the sit-out for next hand instead of changing status now —
+    // sit-out should be clickable at any point, not just while 'playing'.
+    const isInActiveHand = !!room.gameState;
 
     if (isInActiveHand) {
       // Always queue — never fold mid-hand on sit-out request
@@ -1565,15 +1571,26 @@ io.on('connection', (socket) => {
     if (!room) return;
     const player = room.players.find((p) => p.sessionToken === sessionToken);
     if (!player) return;
-    if ((player as any).pendingSitOut) {
+    // Check actual current status first — it's authoritative. pendingSitOut
+    // can be left stuck at true if the player's status already flipped to
+    // 'sitting-out' through another path (e.g. the action-timeout auto-fold
+    // sets status directly, without going through tryStartNextHand's
+    // pending-sitout-apply step that would normally clear the flag).
+    if (player.status === 'sitting-out') {
+      player.status = player.chips > 0 ? 'waiting' : 'no-chips';
+      (player as any).pendingSitOut = false;
+      broadcastRoomState(room);
+      emitSystemMessage(roomId, `${player.nick} is back`);
+      // A game halted for lack of eligible players (e.g. down to 1 with only
+      // 2 at the table) never resumes on its own — try now that this player
+      // is eligible again. Only relevant once a game has actually started
+      // this session — never auto-starts the very first hand.
+      if (room.gameState) tryStartNextHand(roomId);
+    } else if ((player as any).pendingSitOut) {
       // Cancel pending sit-out (player is still in the hand)
       (player as any).pendingSitOut = false;
       broadcastRoomState(room);
       emitSystemMessage(roomId, `${player.nick} cancelled sit-out`);
-    } else if (player.status === 'sitting-out') {
-      player.status = player.chips > 0 ? 'waiting' : 'no-chips';
-      broadcastRoomState(room);
-      emitSystemMessage(roomId, `${player.nick} is back`);
     }
   });
 
@@ -1597,6 +1614,10 @@ io.on('connection', (socket) => {
     broadcastRoomState(room);
     callback?.({ ok: true });
     emitSystemMessage(roomId, `${player.nick} took a seat at the table`);
+    // Resume a game halted for lack of eligible players. Only relevant once a
+    // game has actually started this session — never auto-starts the very
+    // first hand, that's still the admin's explicit "Start game" call.
+    if (room.gameState) tryStartNextHand(roomId);
   });
 
   socket.on('game:set-variant', (payload, callback) => {
@@ -1715,10 +1736,13 @@ io.on('connection', (socket) => {
     target.chips += amount;
     target.totalBuyIn += amount;
     target.chipRequest = undefined;
-    if (target.status === 'sitting-out' && target.chips > 0) target.status = 'waiting';
+    if ((target.status === 'sitting-out' || target.status === 'no-chips') && target.chips > 0) target.status = 'waiting';
     broadcastRoomState(room);
     emitSystemMessage(roomId, `✅ ${target.nick} received ${amount} chips`);
     callback({ ok: true });
+    // Resume a game halted for lack of eligible (chipped) players. Only
+    // relevant once a game has actually started this session.
+    if (room.gameState) tryStartNextHand(roomId);
   });
 
   socket.on('admin:force-next-hand', (_payload, callback) => {
