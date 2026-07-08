@@ -76,6 +76,11 @@ export interface RoomSettings {
   // Defaults to ON — undefined/missing means enabled. Only an explicit `false`
   // (set via admin:set-time-bank-enabled) turns it off.
   timeBankEnabled?: boolean;
+  // This room is linked to a Pasjonaci league (see league-store.ts) —
+  // session results can be submitted from the admin panel. Set via
+  // admin:link-league.
+  leagueId?: string;
+  leagueName?: string;
 }
 
 export type HandPhase = 'preflop' | 'flop' | 'draw' | 'pineapple-discard' | 'turn' | 'river' | 'showdown';
@@ -406,6 +411,13 @@ export interface ClientToServerEvents {
   'admin:set-time-bank-enabled': (
     payload: { enabled: boolean },
     callback: (response: { ok: boolean; error?: string }) => void
+  ) => void;
+  // Links this room to a Pasjonaci league so session results can be
+  // submitted from the admin panel — see league-store.ts. Pass leagueId:
+  // null to unlink.
+  'admin:link-league': (
+    payload: { leagueId: string | null },
+    callback: (response: { ok: boolean; error?: string; leagueName?: string }) => void
   ) => void;
   // Player calls Time Bank (+30s) on their current decision — see callTime in game-engine.ts
   'game:call-time': (
