@@ -40,18 +40,24 @@ export interface LeagueSession {
 export interface LeaguePeriod {
   startedAt: number;
   endedAt: number | null; // null = currently open ("this week")
+  confirmed?: string[]; // settlement keys ("from||to||amount") players marked as paid
 }
 
 interface PasjonaciData {
   sessions: LeagueSession[];
   periods: LeaguePeriod[];
+  allTimeConfirmed?: string[]; // same idea, scoped to the "all time" view
 }
 
 function loadStore(): PasjonaciData {
   try {
     const raw = fs.readFileSync(DATA_FILE, 'utf-8');
     const data = JSON.parse(raw);
-    return { sessions: data.sessions ?? [], periods: data.periods ?? [] };
+    return {
+      sessions: data.sessions ?? [],
+      periods: data.periods ?? [],
+      allTimeConfirmed: data.allTimeConfirmed ?? [],
+    };
   } catch {
     return { sessions: [], periods: [] };
   }
@@ -105,22 +111,35 @@ export function upsertSession(roomId: string, results: LeagueSessionResult[]): v
   persist();
 }
 
-// Password-gated on the results page (see index.ts) — closes the week early.
-// Only resets a running tally, never deletes data.
-export function closePeriodNow(): void {
+// ── Admin operations (password-gated in index.ts) ──────────────────────────
+
+export function deleteSession(id: string): boolean {
   const store = getStore();
-  rollPeriodsForward(store);
-  const open = store.periods[store.periods.length - 1];
-  const now = Date.now();
-  open.endedAt = now;
-  store.periods.push({ startedAt: now, endedAt: null });
+  const before = store.sessions.length;
+  store.sessions = store.sessions.filter((s) => s.id !== id);
+  if (store.sessions.length === before) return false;
   persist();
+  return true;
 }
 
-// Password-gated on the results page — wipes every session and starts a
-// fresh open period. Used when the regulars want to start a clean ledger.
-export function resetAll(): void {
-  cache = { sessions: [], periods: [{ startedAt: Date.now(), endedAt: null }] };
+export function editSession(id: string, results: LeagueSessionResult[]): boolean {
+  const store = getStore();
+  const session = store.sessions.find((s) => s.id === id);
+  if (!session) return false;
+  session.results = results;
+  persist();
+  return true;
+}
+
+// Strips a nick (case-insensitive) out of every session's results — used to
+// pull a player out of the ranking entirely. Sessions left with no
+// participants are dropped.
+export function removePlayer(nick: string): void {
+  const store = getStore();
+  const key = nickKey(nick);
+  store.sessions = store.sessions
+    .map((s) => ({ ...s, results: s.results.filter((r) => nickKey(r.nick) !== key) }))
+    .filter((s) => s.results.length > 0);
   persist();
 }
 
@@ -136,6 +155,40 @@ export interface Settlement {
   from: string;
   to: string;
   amount: number;
+  confirmed: boolean;
+}
+
+function settlementKey(from: string, to: string, amount: number): string {
+  return `${from}||${to}||${amount}`;
+}
+
+// Anyone can mark their own settlement as paid — no password. periodId is
+// either a period's startedAt timestamp or the literal 'all-time' for the
+// aggregate view, since that one has no backing period record.
+export function setSettlementConfirmed(
+  periodId: number | 'all-time',
+  from: string,
+  to: string,
+  amount: number,
+  confirmed: boolean,
+): boolean {
+  const store = getStore();
+  const key = settlementKey(from, to, amount);
+  let list: string[];
+  if (periodId === 'all-time') {
+    if (!store.allTimeConfirmed) store.allTimeConfirmed = [];
+    list = store.allTimeConfirmed;
+  } else {
+    const period = store.periods.find((p) => p.startedAt === periodId);
+    if (!period) return false;
+    if (!period.confirmed) period.confirmed = [];
+    list = period.confirmed;
+  }
+  const idx = list.indexOf(key);
+  if (confirmed && idx === -1) list.push(key);
+  if (!confirmed && idx !== -1) list.splice(idx, 1);
+  persist();
+  return true;
 }
 
 // Canonical key for matching nicks case-insensitively, keeping the first-seen
@@ -161,9 +214,15 @@ export function computeBalances(sessions: LeagueSession[]): PlayerBalance[] {
   return [...byKey.values()].sort((a, b) => b.net - a.net);
 }
 
+export interface RawSettlement {
+  from: string;
+  to: string;
+  amount: number;
+}
+
 // Classic greedy minimum-transaction debt settlement (same approach
 // Splitwise uses): largest debtor pays largest creditor, repeat.
-export function simplifyDebts(balances: PlayerBalance[]): Settlement[] {
+export function simplifyDebts(balances: PlayerBalance[]): RawSettlement[] {
   const creditors = balances
     .filter((b) => b.net > 0)
     .map((b) => ({ nick: b.nick, remaining: b.net }))
@@ -173,7 +232,7 @@ export function simplifyDebts(balances: PlayerBalance[]): Settlement[] {
     .map((b) => ({ nick: b.nick, remaining: -b.net }))
     .sort((a, b) => b.remaining - a.remaining);
 
-  const settlements: Settlement[] = [];
+  const settlements: RawSettlement[] = [];
   let i = 0;
   let j = 0;
   while (i < debtors.length && j < creditors.length) {
@@ -203,10 +262,19 @@ export interface PasjonaciView {
   sessions: LeagueSession[];
 }
 
-function periodView(sessions: LeagueSession[], startedAt: number, endedAt: number | null): LeaguePeriodView {
+function periodView(
+  sessions: LeagueSession[],
+  startedAt: number,
+  endedAt: number | null,
+  confirmedKeys: string[] = [],
+): LeaguePeriodView {
   const inRange = sessions.filter((s) => s.playedAt >= startedAt && (endedAt === null || s.playedAt < endedAt));
   const balances = computeBalances(inRange);
-  return { startedAt, endedAt, balances, settlements: simplifyDebts(balances) };
+  const settlements = simplifyDebts(balances).map((s) => ({
+    ...s,
+    confirmed: confirmedKeys.includes(settlementKey(s.from, s.to, s.amount)),
+  }));
+  return { startedAt, endedAt, balances, settlements };
 }
 
 export function getPasjonaciView(): PasjonaciView {
@@ -217,9 +285,9 @@ export function getPasjonaciView(): PasjonaciView {
   const past = store.periods.slice(0, -1);
 
   return {
-    currentPeriod: periodView(store.sessions, open.startedAt, null),
-    pastPeriods: past.map((p) => periodView(store.sessions, p.startedAt, p.endedAt)).reverse(),
-    allTime: periodView(store.sessions, 0, null),
+    currentPeriod: periodView(store.sessions, open.startedAt, null, open.confirmed),
+    pastPeriods: past.map((p) => periodView(store.sessions, p.startedAt, p.endedAt, p.confirmed)).reverse(),
+    allTime: periodView(store.sessions, 0, null, store.allTimeConfirmed),
     sessions: [...store.sessions].sort((a, b) => b.playedAt - a.playedAt),
   };
 }
