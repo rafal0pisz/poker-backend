@@ -44,7 +44,7 @@ import type {
   SocketData,
   Room,
 } from './types.js';
-import { createLeague, getLeagueView, addSession, closePeriodNow, verifyAdminToken } from './league-store.js';
+import { getPasjonaciView, closePeriodNow, upsertSession } from './league-store.js';
 
 const PORT = Number(process.env.PORT) || 4000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -64,41 +64,18 @@ app.get('/', (_req, res) => {
   res.json({ status: 'ok', service: 'poker-backend', version: '0.5.0' });
 });
 
-// ── Pasjonaci leagues API ──────────────────────────────────────────────
-// Plain REST, not sockets — leagues are read/written from the standalone
-// /pasjonaci pages as well as linked from a live room's admin panel, and
-// persist across restarts (unlike everything else in this file).
-app.post('/api/leagues', (req, res) => {
-  const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
-  if (!name) return res.status(400).json({ ok: false, error: 'Name is required' });
-  const league = createLeague(name);
-  res.json({ ok: true, ...league });
+// ── Pasjonaci results API ───────────────────────────────────────────────
+// Plain REST, not sockets — read from the standalone /pasjonaci/results
+// page. Session results themselves are written server-side, silently, after
+// every hand on a Pasjonaci-tagged table (see syncPasjonaciResults) — there
+// is no client-facing "submit" endpoint.
+app.get('/api/pasjonaci', (_req, res) => {
+  res.json({ ok: true, league: getPasjonaciView() });
 });
 
-app.get('/api/leagues/:id', (req, res) => {
-  const view = getLeagueView(req.params.id);
-  if (!view) return res.status(404).json({ ok: false, error: 'League not found' });
-  res.json({ ok: true, league: view });
-});
-
-app.post('/api/leagues/:id/sessions', (req, res) => {
-  const results = req.body?.results;
-  if (!Array.isArray(results)) return res.status(400).json({ ok: false, error: 'results must be an array' });
-  const result = addSession(req.params.id, results);
-  if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
-  res.json({ ok: true, session: result.session });
-});
-
-app.post('/api/leagues/:id/close-period', (req, res) => {
-  const adminToken = typeof req.body?.adminToken === 'string' ? req.body.adminToken : '';
-  const result = closePeriodNow(req.params.id, adminToken);
-  if (!result.ok) return res.status(403).json({ ok: false, error: result.error });
+app.post('/api/pasjonaci/close-period', (_req, res) => {
+  closePeriodNow();
   res.json({ ok: true });
-});
-
-app.post('/api/leagues/:id/verify-admin', (req, res) => {
-  const adminToken = typeof req.body?.adminToken === 'string' ? req.body.adminToken : '';
-  res.json({ ok: true, isAdmin: verifyAdminToken(req.params.id, adminToken) });
 });
 
 const httpServer = createServer(app);
@@ -510,6 +487,7 @@ function finishRitReveal(roomId: string) {
   );
   recordHandHistory(room, result);
   updatePlayerStats(room, result);
+  syncPasjonaciResults(room);
   broadcastRoomState(room);
   io.to(roomId).emit('game:hand-result', result);
   const desc = describeHandResult(room);
@@ -521,6 +499,25 @@ function finishRitReveal(roomId: string) {
     if (r && applyPendingChips(r)) broadcastRoomState(r);
     tryStartNextHand(roomId);
   }, 6000);
+}
+
+// ── Pasjonaci sync ───────────────────────────────────────────────────────
+// Called after every hand on a Pasjonaci-tagged table (see room:create's
+// `source: 'pasjonaci'`) — silently upserts this table's current standings.
+// No player-visible action required; a mid-session restart loses at most
+// the last hand's update, not the whole session, since this always
+// overwrites the same session (keyed by roomId) rather than appending.
+function syncPasjonaciResults(room: Room): void {
+  if (!room.settings.pasjonaciTable) return;
+  const activeSummary = room.players
+    .filter((p) => p.status !== 'spectator')
+    .map((p) => ({ nick: p.nick, totalBuyIn: p.totalBuyIn, finalChips: p.chips, netResult: p.chips - p.totalBuyIn }));
+  const leftSummary = room.sessionSummary.map((s) => ({
+    nick: s.nick, totalBuyIn: s.totalBuyIn, finalChips: s.finalChips, netResult: s.netResult,
+  }));
+  const activeNicks = new Set(activeSummary.map((s) => s.nick));
+  const results = [...activeSummary, ...leftSummary.filter((s) => !activeNicks.has(s.nick))];
+  upsertSession(room.id, results);
 }
 
 // ── Player stats update ──────────────────────────────────────────────────
@@ -1050,6 +1047,7 @@ function progressGame(roomId: string) {
     room.gameState.lastHandResult = result;
     recordHandHistory(room, result);
     updatePlayerStats(room, result);
+    syncPasjonaciResults(room);
     broadcastRoomState(room);
     io.to(roomId).emit('game:hand-result', result);
 
@@ -1073,6 +1071,7 @@ function progressGame(roomId: string) {
       room.gameState.lastHandResult = result;
       recordHandHistory(room, result);
       updatePlayerStats(room, result);
+      syncPasjonaciResults(room);
       broadcastRoomState(room);
       io.to(roomId).emit('game:hand-result', result);
 
@@ -1245,12 +1244,13 @@ io.on('connection', (socket) => {
       }
 
       const { room, sessionToken } = roomManager.createRoom(payload.nick, settings);
+      if (payload.source === 'pasjonaci') room.settings.pasjonaciTable = true;
       socket.data.sessionToken = sessionToken;
       socket.data.roomId = room.id;
       socket.join(room.id);
       sessionToSocket.set(sessionToken, socket.id);
 
-      console.log(`[room:create] ${payload.nick} created room ${room.id}`);
+      console.log(`[room:create] ${payload.nick} created room ${room.id}${payload.source === 'pasjonaci' ? ' (pasjonaci)' : ''}`);
       callback({ ok: true, room, sessionToken });
       broadcastRoomState(room);
       emitSystemMessage(room.id, `${payload.nick.trim()} created the room`);
@@ -1910,33 +1910,6 @@ io.on('connection', (socket) => {
     room.settings.theme = payload.theme as 'classic' | 'sage' | 'amber';
     broadcastRoomState(room);
     callback({ ok: true });
-  });
-
-  socket.on('admin:link-league', (payload: { leagueId: string | null }, callback) => {
-    const sessionToken = socket.data.sessionToken;
-    const roomId = socket.data.roomId;
-    if (!sessionToken || !roomId) return callback({ ok: false, error: 'No session' });
-    const room = roomManager.getRoom(roomId);
-    if (!room) return callback({ ok: false, error: 'Room not found' });
-    const adminPlayer = room.players.find(p => p.sessionToken === sessionToken && p.role === 'admin');
-    if (!adminPlayer) return callback({ ok: false, error: 'Not admin' });
-
-    if (payload.leagueId === null) {
-      room.settings.leagueId = undefined;
-      room.settings.leagueName = undefined;
-      broadcastRoomState(room);
-      emitSystemMessage(roomId, `🏆 Table unlinked from Pasjonaci league`);
-      return callback({ ok: true });
-    }
-
-    const view = getLeagueView(payload.leagueId);
-    if (!view) return callback({ ok: false, error: 'League code not found' });
-
-    room.settings.leagueId = view.id;
-    room.settings.leagueName = view.name;
-    broadcastRoomState(room);
-    emitSystemMessage(roomId, `🏆 Table linked to Pasjonaci league: ${view.name}`);
-    callback({ ok: true, leagueName: view.name });
   });
 
   socket.on('admin:set-time-bank-enabled', (payload: { enabled: boolean }, callback) => {
