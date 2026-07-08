@@ -44,7 +44,7 @@ import type {
   SocketData,
   Room,
 } from './types.js';
-import { getPasjonaciView, closePeriodNow, upsertSession } from './league-store.js';
+import { getPasjonaciView, closePeriodNow, resetAll, upsertSession } from './league-store.js';
 
 const PORT = Number(process.env.PORT) || 4000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -73,8 +73,28 @@ app.get('/api/pasjonaci', (_req, res) => {
   res.json({ ok: true, league: getPasjonaciView() });
 });
 
-app.post('/api/pasjonaci/close-period', (_req, res) => {
+// Settling a period or wiping the ledger is gated behind a shared password
+// (not per-user accounts — matches the app's no-auth model, just keeps
+// regular players from accidentally resetting the tally).
+const PASJONACI_PASSWORD = process.env.PASJONACI_PASSWORD || 'Pokero123!';
+
+function checkPasjonaciPassword(req: express.Request, res: express.Response): boolean {
+  if (req.body?.password !== PASJONACI_PASSWORD) {
+    res.status(403).json({ ok: false, error: 'Nieprawidłowe hasło' });
+    return false;
+  }
+  return true;
+}
+
+app.post('/api/pasjonaci/close-period', (req, res) => {
+  if (!checkPasjonaciPassword(req, res)) return;
   closePeriodNow();
+  res.json({ ok: true });
+});
+
+app.post('/api/pasjonaci/reset', (req, res) => {
+  if (!checkPasjonaciPassword(req, res)) return;
+  resetAll();
   res.json({ ok: true });
 });
 

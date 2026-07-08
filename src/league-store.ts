@@ -105,9 +105,8 @@ export function upsertSession(roomId: string, results: LeagueSessionResult[]): v
   persist();
 }
 
-// Anyone on the results page can close the week early — same trust model as
-// everything else in this app (no accounts; whoever has the link is
-// trusted), and the action only resets a running tally, it never deletes data.
+// Password-gated on the results page (see index.ts) — closes the week early.
+// Only resets a running tally, never deletes data.
 export function closePeriodNow(): void {
   const store = getStore();
   rollPeriodsForward(store);
@@ -115,6 +114,13 @@ export function closePeriodNow(): void {
   const now = Date.now();
   open.endedAt = now;
   store.periods.push({ startedAt: now, endedAt: null });
+  persist();
+}
+
+// Password-gated on the results page — wipes every session and starts a
+// fresh open period. Used when the regulars want to start a clean ledger.
+export function resetAll(): void {
+  cache = { sessions: [], periods: [{ startedAt: Date.now(), endedAt: null }] };
   persist();
 }
 
