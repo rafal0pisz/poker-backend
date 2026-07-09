@@ -347,6 +347,13 @@ function withRoomLock(roomId: string, fn: () => void): void {
   roomProcessing.set(roomId, true);
   try {
     fn();
+  } catch (err) {
+    // Every game-progression call (progressGame, resolveRunItTwiceVote, etc.)
+    // runs through here. Without this catch, an exception anywhere inside
+    // (e.g. pokersolver throwing on a corrupt hand) is an uncaught exception
+    // that crashes the ENTIRE process — taking down every room, not just the
+    // one that hit the bug. Log and isolate the failure to this room instead.
+    console.error(`[withRoomLock] Unhandled error processing room ${roomId}:`, err);
   } finally {
     roomProcessing.delete(roomId);
   }
@@ -1111,7 +1118,22 @@ function advanceRevealPhase(roomId: string) {
   drawDecideTimers.set(roomId, timer);
 }
 
+// progressGame is called from many places — some go through withRoomLock
+// (which already catches), but several fire straight from raw setTimeout
+// callbacks (e.g. all-in runout auto-advance) and bypass it entirely. An
+// exception anywhere inside (pokersolver choking on a corrupt hand, say) is
+// then an uncaught exception that crashes the WHOLE process, taking down
+// every room — not just the one that hit the bug. Wrapping here protects
+// every call site uniformly instead of chasing each one down individually.
 function progressGame(roomId: string) {
+  try {
+    progressGameInner(roomId);
+  } catch (err) {
+    console.error(`[progressGame] Unhandled error in room ${roomId}:`, err);
+  }
+}
+
+function progressGameInner(roomId: string) {
   const room = roomManager.getRoom(roomId);
   if (!room || !room.gameState) return;
 
@@ -1765,7 +1787,7 @@ io.on('connection', (socket) => {
     const player = room.players.find((p) => p.sessionToken === sessionToken);
     if (!player) return callback?.({ ok: false, error: 'Player not found' });
 
-    const allowed: GameVariant[] = ['texas', 'omaha', 'omaha-pl', 'omaha5', 'omaha-hl', 'drawmaha', 'drawmaha-pl', 'pineapple', 'pineapple-classic', 'drawmaha-bomb'];
+    const allowed: GameVariant[] = ['texas', 'omaha', 'omaha-pl', 'omaha5', 'omaha-hl', 'drawmaha', 'drawmaha-pl', 'pineapple', 'pineapple-classic', 'texas-bomb'];
     if (!allowed.includes(payload.variant)) {
       return callback?.({ ok: false, error: 'Unknown variant' });
     }

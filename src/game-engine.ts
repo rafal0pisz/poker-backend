@@ -21,10 +21,11 @@ import pokersolverImport from 'pokersolver';
 const { Hand } = pokersolverImport as any;
 
 // Any variant using Drawmaha's 5-card-hole / draw-phase / split-pot (Omaha +
-// Texas half) rules — 'drawmaha-bomb' is the same engine, just entered via a
-// no-blinds bomb-pot ante instead of normal blinds/preflop betting.
+// Texas half) rules. 'texas-bomb' deliberately does NOT use this — it's
+// standard Texas Hold'em, just entered via a no-blinds bomb-pot ante instead
+// of normal blinds/preflop betting.
 export function isDrawmahaVariant(variant: GameVariant): boolean {
-  return variant === 'drawmaha' || variant === 'drawmaha-pl' || variant === 'drawmaha-bomb';
+  return variant === 'drawmaha' || variant === 'drawmaha-pl';
 }
 
 /**
@@ -97,7 +98,15 @@ export function refillDeckFromMuck(room: Room, deck: Card[]): number {
   for (const player of room.players) {
     if (player.status === 'folded' && player.holeCards && player.holeCards.length > 0) {
       muck.push(...player.holeCards);
-      // Don't clear holeCards — they'll be cleared at hand end, but mark them
+      // Clear immediately — this function can run more than once in the same
+      // hand (once per discard/decide that empties the deck), and without
+      // this a second call would scoop up the SAME cards again, injecting
+      // duplicates into the deck. That silently produces duplicate cards
+      // between an active player's hand and the board, which then makes
+      // pokersolver choke at showdown and the hand never resolves — the
+      // exact "game freezes with more players" symptom (more players means
+      // more discards/decisions, so this path gets hit far more often).
+      player.holeCards = [];
     }
   }
   if (muck.length === 0) return 0;
@@ -106,6 +115,35 @@ export function refillDeckFromMuck(room: Room, deck: Card[]): number {
   deck.unshift(...shuffled); // add to bottom (next pops from top)
   console.log(`[Drawmaha] Refilled deck with ${shuffled.length} muck cards from folded players`);
   return shuffled.length;
+}
+
+/**
+ * Burns one card and deals `count` community cards, refilling from the muck
+ * if the deck runs dry (same fallback as hole cards / draws). Hole cards
+ * and draw replacements already guard against deck exhaustion, but this
+ * dealing path used `deck.pop()!` unguarded — with more players (5-card
+ * hole cards in Drawmaha eat into the deck fast), the deck can run out
+ * before the board is complete, pushing a literal `undefined` onto
+ * communityCards. That `undefined` later crashes pokersolver deep inside
+ * showdown evaluation with no way to recover, taking down the whole hand
+ * (and, since nothing upstream catches it, the whole process). Never push
+ * `undefined` — if even the muck is exhausted, stop short and log loudly
+ * instead of dealing a corrupt board.
+ */
+function dealCommunityCards(room: Room, deck: Card[], count: number): Card[] {
+  if (deck.length === 0) refillDeckFromMuck(room, deck);
+  deck.pop(); // burn
+  const dealt: Card[] = [];
+  for (let i = 0; i < count; i++) {
+    if (deck.length === 0) refillDeckFromMuck(room, deck);
+    const card = deck.pop();
+    if (!card) {
+      console.error(`[${room.id}] Deck and muck both exhausted dealing community cards — board short by ${count - i} card(s)`);
+      break;
+    }
+    dealt.push(card);
+  }
+  return dealt;
 }
 
 /**
@@ -264,13 +302,13 @@ export function startNewHand(room: Room): { deck: Card[] } {
     }
   }
 
-  // ===== DRAWMAHA BOMB POT =====
+  // ===== TEXAS BOMB POT =====
   // No blinds, no preflop betting — every active player antes two big blinds
   // (or whatever's left of their stack, if shorter), the flop is dealt
   // immediately, and betting starts fresh from there. Everything after the
-  // flop (draw phase, split pot) follows normal Drawmaha rules via
-  // isDrawmahaVariant / finalizeDrawmahaHand.
-  if (variant === 'drawmaha-bomb') {
+  // flop is standard Texas Hold'em (isDrawmahaVariant is false for this
+  // variant, so no draw phase, no split pot — single winner, best 5 of 7).
+  if (variant === 'texas-bomb') {
     const bombAnteTotal = room.settings.bigBlind * 2;
     for (const player of activePlayers) {
       const ante = Math.min(bombAnteTotal, player.chips);
@@ -1763,11 +1801,9 @@ export function advancePhase(room: Room, deck: Card[]): void {
 
     // Deal community cards for each street
     if (nextPhase === 'flop') {
-      deck.pop(); // burn card
-      room.gameState.communityCards.push(deck.pop()!, deck.pop()!, deck.pop()!);
+      room.gameState.communityCards.push(...dealCommunityCards(room, deck, 3));
     } else if (nextPhase === 'turn' || nextPhase === 'river') {
-      deck.pop(); // burn card
-      room.gameState.communityCards.push(deck.pop()!);
+      room.gameState.communityCards.push(...dealCommunityCards(room, deck, 1));
     }
 
     room.gameState.pineappleDiscardState = undefined;
@@ -1810,11 +1846,9 @@ export function advancePhase(room: Room, deck: Card[]): void {
   room.gameState.phase = nextPhase;
 
   if (nextPhase === 'flop') {
-    deck.pop();
-    room.gameState.communityCards.push(deck.pop()!, deck.pop()!, deck.pop()!);
+    room.gameState.communityCards.push(...dealCommunityCards(room, deck, 3));
   } else if (nextPhase === 'turn' || nextPhase === 'river') {
-    deck.pop();
-    room.gameState.communityCards.push(deck.pop()!);
+    room.gameState.communityCards.push(...dealCommunityCards(room, deck, 1));
   } else if (nextPhase === 'draw') {
     // Initialize draw state — no community cards dealt here
     room.gameState.drawState = initDrawState(room);
@@ -2099,7 +2133,7 @@ export function finishHand(room: Room): HandResult {
 // High+Low) — stacking a second board split on top of that would need its
 // own dedicated design, so for now those variants keep the existing
 // single-board runout behavior.
-const RUN_IT_TWICE_INELIGIBLE_VARIANTS: GameVariant[] = ['drawmaha', 'drawmaha-pl', 'drawmaha-bomb', 'omaha-hl'];
+const RUN_IT_TWICE_INELIGIBLE_VARIANTS: GameVariant[] = ['drawmaha', 'drawmaha-pl', 'omaha-hl'];
 
 /**
  * True exactly once per hand, at the moment an all-in runout is first
