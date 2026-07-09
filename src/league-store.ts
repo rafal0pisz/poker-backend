@@ -12,6 +12,7 @@
 // about since Node runs this on one thread and writes are small/infrequent.
 import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'crypto';
 
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -37,16 +38,28 @@ export interface LeagueSession {
   results: LeagueSessionResult[];
 }
 
+// A real, recorded payment between two players — not a UI flag. Once
+// recorded it permanently offsets the settlement calculation, so a debt
+// that's been paid off stays paid off even as new sessions get added
+// (those only create new, separate imbalance on top of a zeroed-out base).
+export interface Payment {
+  id: string;
+  from: string;
+  to: string;
+  amount: number;
+  paidAt: number;
+}
+
 export interface LeaguePeriod {
   startedAt: number;
   endedAt: number | null; // null = currently open ("this week")
-  confirmed?: string[]; // settlement keys ("from||to||amount") players marked as paid
+  payments?: Payment[];
 }
 
 interface PasjonaciData {
   sessions: LeagueSession[];
   periods: LeaguePeriod[];
-  allTimeConfirmed?: string[]; // same idea, scoped to the "all time" view
+  allTimePayments?: Payment[]; // same idea, scoped to the "all time" view
 }
 
 function loadStore(): PasjonaciData {
@@ -56,7 +69,7 @@ function loadStore(): PasjonaciData {
     return {
       sessions: data.sessions ?? [],
       periods: data.periods ?? [],
-      allTimeConfirmed: data.allTimeConfirmed ?? [],
+      allTimePayments: data.allTimePayments ?? [],
     };
   } catch {
     return { sessions: [], periods: [] };
@@ -155,40 +168,64 @@ export interface Settlement {
   from: string;
   to: string;
   amount: number;
-  confirmed: boolean;
 }
 
-function settlementKey(from: string, to: string, amount: number): string {
-  return `${from}||${to}||${amount}`;
+function paymentList(store: PasjonaciData, periodId: number | 'all-time'): Payment[] | null {
+  if (periodId === 'all-time') {
+    if (!store.allTimePayments) store.allTimePayments = [];
+    return store.allTimePayments;
+  }
+  const period = store.periods.find((p) => p.startedAt === periodId);
+  if (!period) return null;
+  if (!period.payments) period.payments = [];
+  return period.payments;
 }
 
-// Anyone can mark their own settlement as paid — no password. periodId is
-// either a period's startedAt timestamp or the literal 'all-time' for the
-// aggregate view, since that one has no backing period record.
-export function setSettlementConfirmed(
+// Anyone can record their own payment — no password, matches "each person
+// settles their own debt". This permanently offsets the balance used for
+// settlement (see applyPayments) — it does NOT touch the Ranking, which
+// stays pure poker performance regardless of who's paid whom.
+export function recordPayment(
   periodId: number | 'all-time',
   from: string,
   to: string,
   amount: number,
-  confirmed: boolean,
 ): boolean {
   const store = getStore();
-  const key = settlementKey(from, to, amount);
-  let list: string[];
-  if (periodId === 'all-time') {
-    if (!store.allTimeConfirmed) store.allTimeConfirmed = [];
-    list = store.allTimeConfirmed;
-  } else {
-    const period = store.periods.find((p) => p.startedAt === periodId);
-    if (!period) return false;
-    if (!period.confirmed) period.confirmed = [];
-    list = period.confirmed;
-  }
-  const idx = list.indexOf(key);
-  if (confirmed && idx === -1) list.push(key);
-  if (!confirmed && idx !== -1) list.splice(idx, 1);
+  const list = paymentList(store, periodId);
+  if (!list) return false;
+  list.push({ id: randomUUID(), from, to, amount, paidAt: Date.now() });
   persist();
   return true;
+}
+
+// Undo a mistaken payment record — removes it entirely, so the settlement
+// calculation reverts to including that debt again.
+export function undoPayment(periodId: number | 'all-time', paymentId: string): boolean {
+  const store = getStore();
+  const list = paymentList(store, periodId);
+  if (!list) return false;
+  const idx = list.findIndex((p) => p.id === paymentId);
+  if (idx === -1) return false;
+  list.splice(idx, 1);
+  persist();
+  return true;
+}
+
+// Applies recorded payments on top of raw session balances — paying down a
+// debt moves the payer's balance toward zero and the payee's balance toward
+// zero by the same amount, so it always keeps the total exactly conserved.
+function applyPayments(balances: PlayerBalance[], payments: Payment[]): PlayerBalance[] {
+  if (!payments || payments.length === 0) return balances;
+  const adjusted = balances.map((b) => ({ ...b }));
+  const byKey = new Map(adjusted.map((b) => [nickKey(b.nick), b]));
+  for (const p of payments) {
+    const fromB = byKey.get(nickKey(p.from));
+    const toB = byKey.get(nickKey(p.to));
+    if (fromB) fromB.net += p.amount;
+    if (toB) toB.net -= p.amount;
+  }
+  return adjusted;
 }
 
 // Canonical key for matching nicks case-insensitively, keeping the first-seen
@@ -251,8 +288,9 @@ export function simplifyDebts(balances: PlayerBalance[]): RawSettlement[] {
 export interface LeaguePeriodView {
   startedAt: number;
   endedAt: number | null;
-  balances: PlayerBalance[];
-  settlements: Settlement[];
+  balances: PlayerBalance[]; // raw poker performance — never affected by payments
+  settlements: Settlement[]; // still-outstanding debt, after recorded payments
+  payments: Payment[]; // history, newest first — for the undo UI
 }
 
 export interface PasjonaciView {
@@ -266,15 +304,12 @@ function periodView(
   sessions: LeagueSession[],
   startedAt: number,
   endedAt: number | null,
-  confirmedKeys: string[] = [],
+  payments: Payment[] = [],
 ): LeaguePeriodView {
   const inRange = sessions.filter((s) => s.playedAt >= startedAt && (endedAt === null || s.playedAt < endedAt));
   const balances = computeBalances(inRange);
-  const settlements = simplifyDebts(balances).map((s) => ({
-    ...s,
-    confirmed: confirmedKeys.includes(settlementKey(s.from, s.to, s.amount)),
-  }));
-  return { startedAt, endedAt, balances, settlements };
+  const settlements = simplifyDebts(applyPayments(balances, payments));
+  return { startedAt, endedAt, balances, settlements, payments: [...payments].sort((a, b) => b.paidAt - a.paidAt) };
 }
 
 export function getPasjonaciView(): PasjonaciView {
@@ -285,9 +320,9 @@ export function getPasjonaciView(): PasjonaciView {
   const past = store.periods.slice(0, -1);
 
   return {
-    currentPeriod: periodView(store.sessions, open.startedAt, null, open.confirmed),
-    pastPeriods: past.map((p) => periodView(store.sessions, p.startedAt, p.endedAt, p.confirmed)).reverse(),
-    allTime: periodView(store.sessions, 0, null, store.allTimeConfirmed),
+    currentPeriod: periodView(store.sessions, open.startedAt, null, open.payments),
+    pastPeriods: past.map((p) => periodView(store.sessions, p.startedAt, p.endedAt, p.payments)).reverse(),
+    allTime: periodView(store.sessions, 0, null, store.allTimePayments),
     sessions: [...store.sessions].sort((a, b) => b.playedAt - a.playedAt),
   };
 }

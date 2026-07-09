@@ -46,7 +46,8 @@ import type {
 } from './types.js';
 import {
   getPasjonaciView,
-  setSettlementConfirmed,
+  recordPayment,
+  undoPayment,
   deleteSession,
   editSession,
   removePlayer,
@@ -81,23 +82,39 @@ app.get('/api/pasjonaci', (_req, res) => {
   res.json({ ok: true, league: getPasjonaciView() });
 });
 
-// Anyone can tick off their own settlement as paid — no password, matches
-// "each person settles their own debt" rather than a single admin action.
-app.post('/api/pasjonaci/settlement/confirm', (req, res) => {
-  const { periodId, from, to, amount, confirmed } = req.body ?? {};
+// Anyone can record their own payment as paid — no password, matches "each
+// person settles their own debt" rather than a single admin action. This
+// permanently offsets the settlement calculation (not the Ranking, which
+// always stays pure poker performance) — a new session afterwards only
+// adds fresh imbalance on top, it doesn't resurrect the paid-off debt.
+app.post('/api/pasjonaci/settlement/pay', (req, res) => {
+  const { periodId, from, to, amount } = req.body ?? {};
   if (
     (typeof periodId !== 'number' && periodId !== 'all-time') ||
     typeof from !== 'string' ||
     typeof to !== 'string' ||
-    typeof amount !== 'number' ||
-    typeof confirmed !== 'boolean'
+    typeof amount !== 'number'
   ) {
     res.status(400).json({ ok: false, error: 'Nieprawidłowe dane' });
     return;
   }
-  const found = setSettlementConfirmed(periodId, from, to, amount, confirmed);
+  const found = recordPayment(periodId, from, to, amount);
   if (!found) {
     res.status(404).json({ ok: false, error: 'Nie znaleziono okresu rozliczeniowego' });
+    return;
+  }
+  res.json({ ok: true });
+});
+
+app.post('/api/pasjonaci/settlement/undo-payment', (req, res) => {
+  const { periodId, paymentId } = req.body ?? {};
+  if ((typeof periodId !== 'number' && periodId !== 'all-time') || typeof paymentId !== 'string') {
+    res.status(400).json({ ok: false, error: 'Nieprawidłowe dane' });
+    return;
+  }
+  const found = undoPayment(periodId, paymentId);
+  if (!found) {
+    res.status(404).json({ ok: false, error: 'Nie znaleziono płatności' });
     return;
   }
   res.json({ ok: true });
