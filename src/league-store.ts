@@ -17,9 +17,16 @@ import { randomUUID } from 'crypto';
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Railway sets this automatically once a volume is attached to the service.
-// Falls back to a local ./data folder for development.
+// Falls back to a local ./data folder for development. Logged loudly at
+// startup — if RAILWAY_VOLUME_MOUNT_PATH is ever unset in production, this
+// silently falls back to the container's ephemeral local disk, which wipes
+// the whole ledger on every redeploy. Check this log line first if data
+// ever appears to have vanished.
 const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || path.resolve(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'pasjonaci.json');
+console.log(
+  `[Pasjonaci] Data file: ${DATA_FILE} (RAILWAY_VOLUME_MOUNT_PATH=${process.env.RAILWAY_VOLUME_MOUNT_PATH ?? '<unset — using ephemeral local disk!>'})`,
+);
 
 export interface LeagueSessionResult {
   nick: string;
@@ -66,12 +73,23 @@ function loadStore(): PasjonaciData {
   try {
     const raw = fs.readFileSync(DATA_FILE, 'utf-8');
     const data = JSON.parse(raw);
+    console.log(
+      `[Pasjonaci] Loaded ${data.sessions?.length ?? 0} session(s), ${data.periods?.length ?? 0} period(s) from ${DATA_FILE}`,
+    );
     return {
       sessions: data.sessions ?? [],
       periods: data.periods ?? [],
       allTimePayments: data.allTimePayments ?? [],
     };
-  } catch {
+  } catch (err) {
+    // Logged loudly on purpose: this path means either a fresh ledger (fine,
+    // expected on first run) or a lost/misconfigured volume (NOT fine —
+    // any write from here on overwrites whatever was on disk, which is
+    // exactly how a mount misconfiguration turns into permanent data loss).
+    console.warn(
+      `[Pasjonaci] Could not read ${DATA_FILE} — starting with an EMPTY ledger. If this isn't the first run, the data volume is likely missing or misconfigured. Reason:`,
+      err instanceof Error ? err.message : err,
+    );
     return { sessions: [], periods: [] };
   }
 }
