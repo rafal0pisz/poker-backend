@@ -225,6 +225,24 @@ function gracefulShutdown(signal: string) {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
+// Last-resort safety net. Every known hand-evaluation path (progressGame,
+// the Run-It-Twice reveal chain, withRoomLock) already has its own
+// try/catch that isolates a failure to one room — but this exists in case
+// some future/unknown code path is missed. Without it, ANY uncaught
+// exception anywhere crashes the whole process, disconnecting every player
+// at every table on the server (Railway then takes several seconds to
+// restart the container) — for a bug that, in every case seen so far,
+// was actually scoped to a single room's single hand. Logging and staying
+// up keeps every other table running uninterrupted; the pragmatic choice
+// here, since Node's "exit on uncaught exception" default is exactly the
+// behavior we're trying to avoid.
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException] Unhandled error — process staying up, only the room that hit this may be affected:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection] Unhandled promise rejection — process staying up:', reason);
+});
+
 // Room expiry — clean up inactive rooms every 30 minutes
 // Prevents memory leak on Railway free tier (512MB RAM)
 const ROOM_EXPIRY_MS = 4 * 60 * 60 * 1000; // 4 hours
@@ -473,7 +491,25 @@ function scheduleBotRunItTwiceDecisions(roomId: string) {
  * Resolves an open Run It Twice vote — called when everyone has decided, or
  * when the decide-timer fires (undecided players count as a decline).
  */
+// The whole Run-It-Twice reveal chain (resolveRunItTwiceVote ->
+// startRunItTwiceReveal -> advanceRitReveal -> finishRitReveal) is driven by
+// setTimeout continuations, each a separate call stack from whatever
+// scheduled it. withRoomLock's try/catch only covers the synchronous call
+// that kicks the chain off — an exception thrown later inside one of these
+// timeouts (e.g. pokersolver choking on a short board if the deck runs dry
+// building two independent boards for a near-full Omaha table) is uncaught
+// and crashes the whole process. Each function gets its own catch so a
+// failure here is isolated to this room's hand instead of taking down
+// every table on the server.
 function resolveRunItTwiceVote(roomId: string) {
+  try {
+    resolveRunItTwiceVoteInner(roomId);
+  } catch (err) {
+    console.error(`[resolveRunItTwiceVote] Unhandled error in room ${roomId}:`, err);
+  }
+}
+
+function resolveRunItTwiceVoteInner(roomId: string) {
   const room = roomManager.getRoom(roomId);
   if (!room?.gameState?.runItTwiceState) return;
   clearRunItTwiceTimer(roomId);
@@ -515,6 +551,14 @@ const RIT_CARD_DELAY_MS = 1400; // pause between individual card reveals — mat
 const RIT_BOARD_HOLD_MS = 2200; // pause on a just-completed board before moving on (or finishing)
 
 function startRunItTwiceReveal(roomId: string) {
+  try {
+    startRunItTwiceRevealInner(roomId);
+  } catch (err) {
+    console.error(`[startRunItTwiceReveal] Unhandled error in room ${roomId}:`, err);
+  }
+}
+
+function startRunItTwiceRevealInner(roomId: string) {
   const room = roomManager.getRoom(roomId);
   if (!room?.gameState) return;
 
@@ -535,6 +579,14 @@ function startRunItTwiceReveal(roomId: string) {
 }
 
 function advanceRitReveal(roomId: string) {
+  try {
+    advanceRitRevealInner(roomId);
+  } catch (err) {
+    console.error(`[advanceRitReveal] Unhandled error in room ${roomId}:`, err);
+  }
+}
+
+function advanceRitRevealInner(roomId: string) {
   const room = roomManager.getRoom(roomId);
   const rit = room?.gameState?.runItTwiceReveal;
   const deck = roomManager.getDeck(roomId);
@@ -543,7 +595,7 @@ function advanceRitReveal(roomId: string) {
 
   const boardIdx = rit.activeBoard;
   const board = rit.boards[boardIdx];
-  const dealt = dealNextRitCard(board, deck);
+  const dealt = dealNextRitCard(room, board, deck);
   room.gameState.communityCards = board;
 
   if (dealt && board.length < 5) {
@@ -579,6 +631,14 @@ function advanceRitReveal(roomId: string) {
 }
 
 function finishRitReveal(roomId: string) {
+  try {
+    finishRitRevealInner(roomId);
+  } catch (err) {
+    console.error(`[finishRitReveal] Unhandled error in room ${roomId}:`, err);
+  }
+}
+
+function finishRitRevealInner(roomId: string) {
   const room = roomManager.getRoom(roomId);
   const rit = room?.gameState?.runItTwiceReveal;
   const ctx = ritContext.get(roomId);
@@ -1013,6 +1073,14 @@ function describeHandResult(room: Room): string {
  * Sets a 15s auto-reject timer.
  */
 function advanceRevealPhase(roomId: string) {
+  try {
+    advanceRevealPhaseInner(roomId);
+  } catch (err) {
+    console.error(`[advanceRevealPhase] Unhandled error in room ${roomId}:`, err);
+  }
+}
+
+function advanceRevealPhaseInner(roomId: string) {
   // Clear any existing timer
   const existingTimer = drawDecideTimers.get(roomId);
   if (existingTimer) {
@@ -1619,8 +1687,9 @@ io.on('connection', (socket) => {
     // get batched into one broadcast (reduces 6 → 1 re-render on clients)
     broadcastRoomStateDebounced(room);
 
-    // Check if all players have drawn
-    progressGame(roomId);
+    // Check if all players have drawn — withRoomLock so this can't race a
+    // concurrently-firing timer also calling progressGame on this room.
+    withRoomLock(roomId, () => progressGame(roomId));
   });
 
   // ===== DRAWMAHA: Reveal phase — accept or reject open card =====
@@ -2355,8 +2424,9 @@ io.on('connection', (socket) => {
     broadcastRoomState(room);
     callback?.({ ok: true });
 
-    // Check if all players have discarded
-    progressGame(roomId);
+    // Check if all players have discarded — withRoomLock so this can't
+    // race a concurrently-firing timer also calling progressGame here.
+    withRoomLock(roomId, () => progressGame(roomId));
   });
 
   socket.on('game:show-hand', () => {
@@ -2387,6 +2457,18 @@ io.on('connection', (socket) => {
     console.log(`[Socket] Disconnected: ${socket.id}`);
     const sessionToken = socket.data.sessionToken;
     if (!sessionToken) return;
+
+    // pingTimeout is 60s, so a stale socket's 'disconnect' can fire up to a
+    // minute after the client already reconnected on a fresh socket (page
+    // reload, brief network drop, closing a duplicate tab). If a newer
+    // socket has already taken over this session, this event is stale —
+    // acting on it would wrongly mark the still-live session as
+    // disconnected and, after the grace period, silently fold/sit them out
+    // even though they're actively connected and playing. Bail out instead.
+    if (sessionToSocket.get(sessionToken) !== socket.id) {
+      console.log(`[Socket] Stale disconnect for session ${sessionToken} — already reconnected on a newer socket, ignoring`);
+      return;
+    }
     sessionToSocket.delete(sessionToken);
 
     const result = roomManager.disconnectPlayer(sessionToken);
@@ -2486,7 +2568,11 @@ setInterval(() => {
     const now = Date.now();
 
     // ── 1. Normal betting phase: stuck currentPlayerSeat ──────────────────
-    if (currentPlayerSeat) {
+    // currentPlayerSeat !== null, NOT a truthiness check — seat 0 is a
+    // real, common seat (room creator/admin defaults to it) and is falsy,
+    // so `if (currentPlayerSeat)` would silently skip this whole watchdog
+    // whenever the stuck player happened to be sitting in seat 0.
+    if (currentPlayerSeat !== null) {
       const current = room.players.find(p => p.seat === currentPlayerSeat);
       if (current) {
         const isStuck =

@@ -161,6 +161,16 @@ export function solveTexas(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): { hand: any; winningCards: Card[] } {
   const allCards = [...holeCards, ...boardCards];
+  if (allCards.length < 5) {
+    // combinations(allCards, 5) would silently return [] here, leaving
+    // bestHand null and hiding behind a `!` assertion — every caller
+    // immediately dereferences .name/.descr on the result, which throws a
+    // much more confusing "cannot read properties of null" several frames
+    // away from the actual cause. A short board can genuinely happen (a
+    // deck/muck fully exhausted while building an extra Run It Twice
+    // board) — fail loudly and immediately instead.
+    throw new Error(`Need at least 5 cards to solve a Texas hand, got ${allCards.length}`);
+  }
   const fiveCombos = combinations(allCards, 5);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2200,11 +2210,22 @@ export function didAllAcceptRunItTwice(room: Room): boolean {
  * protocol. Returns false when there's nothing left to deal (board already
  * complete, or the deck ran dry) so the caller knows to stop.
  */
-export function dealNextRitCard(board: Card[], deck: Card[]): boolean {
+export function dealNextRitCard(room: Room, board: Card[], deck: Card[]): boolean {
   if (board.length >= 5) return false;
+  if (deck.length === 0) refillDeckFromMuck(room, deck);
   deck.pop(); // burn
+  if (deck.length === 0) refillDeckFromMuck(room, deck);
   const next = deck.pop();
-  if (!next) return false; // deck exhausted — shouldn't happen with a 52-card deck and ≤9 players
+  if (!next) {
+    // Deck AND muck exhausted — genuinely nothing left to deal. Building
+    // two independent boards from one deck for a near-full table (e.g. 9
+    // players x 4 hole cards in Omaha) can plausibly run the deck dry;
+    // without the muck-refill above this used to silently leave a board
+    // short of 5 cards, which then made solveOmaha/solveTexas throw or
+    // return a null hand deep inside an unprotected reveal timeout.
+    console.error(`[${room.id}] Deck and muck both exhausted dealing a Run It Twice board — stopping at ${board.length} cards`);
+    return false;
+  }
   board.push(next);
   return true;
 }
