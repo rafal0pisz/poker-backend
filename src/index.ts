@@ -982,10 +982,10 @@ function tryStartNextHand(roomId: string): boolean {
     sendHoleCards(room);
     scheduleActionTimer(roomId); // preflop — first to act
     console.log(`[tryStartNextHand] Started hand #${room.gameState?.handNumber} in ${roomId}`);
-    // Bomb Pot (and any other variant with no preflop betting round) can land
-    // straight into an all-in runout at the very first street if antes bust
-    // most of the table — nobody has acted yet, so nothing will call
-    // progressGame otherwise. Kick it off explicitly in that case.
+    // A hand can land straight into an all-in runout at the very first
+    // street (e.g. two short-stacked players both post blinds all-in) —
+    // nobody has acted yet, so nothing will call progressGame otherwise.
+    // Kick it off explicitly in that case.
     if (room.gameState && room.gameState.currentPlayerSeat === null) {
       withRoomLock(roomId, () => progressGame(roomId));
     }
@@ -1437,7 +1437,7 @@ io.on('connection', (socket) => {
       sessionToSocket.set(sessionToken, socket.id);
 
       console.log(`[room:create] ${payload.nick} created room ${room.id}${payload.source === 'pasjonaci' ? ' (pasjonaci)' : ''}`);
-      callback({ ok: true, room, sessionToken });
+      callback({ ok: true, room: roomManager.sanitizeRoomForPlayer(room, sessionToken), sessionToken });
       broadcastRoomState(room);
       emitSystemMessage(room.id, `${payload.nick.trim()} created the room`);
     } catch (err) {
@@ -1490,7 +1490,15 @@ io.on('connection', (socket) => {
         }
       }
 
-      callback({ ok: true, room: result.room, sessionToken: result.sessionToken });
+      // Sanitize before sending — this callback response is a client's very
+      // first view of the room on join/reconnect, and unlike
+      // broadcastRoomState() this path was sending the raw room object
+      // straight through, exposing every other player's hole cards for the
+      // brief window before the properly-sanitized room:state broadcast
+      // below overwrites it. Reconnecting (e.g. backgrounding the app then
+      // returning to it) goes through exactly this path, making the leak
+      // easy to reproduce on demand.
+      callback({ ok: true, room: roomManager.sanitizeRoomForPlayer(result.room, result.sessionToken), sessionToken: result.sessionToken });
       broadcastRoomState(result.room);
 
       const player = result.room.players.find((p) => p.sessionToken === result.sessionToken);
@@ -1856,7 +1864,7 @@ io.on('connection', (socket) => {
     const player = room.players.find((p) => p.sessionToken === sessionToken);
     if (!player) return callback?.({ ok: false, error: 'Player not found' });
 
-    const allowed: GameVariant[] = ['texas', 'omaha', 'omaha-pl', 'omaha5', 'omaha-hl', 'drawmaha', 'drawmaha-pl', 'pineapple', 'pineapple-classic', 'texas-bomb'];
+    const allowed: GameVariant[] = ['texas', 'omaha', 'omaha-pl', 'omaha5', 'omaha-hl', 'drawmaha', 'drawmaha-pl', 'pineapple', 'pineapple-classic'];
     if (!allowed.includes(payload.variant)) {
       return callback?.({ ok: false, error: 'Unknown variant' });
     }
