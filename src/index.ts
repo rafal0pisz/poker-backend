@@ -58,7 +58,10 @@ import {
 } from './league-store.js';
 import {
   MIN_TOURNAMENT_PLAYERS,
+  REBUY_DECIDE_MS,
   processTournamentEliminations,
+  handleTournamentBusts,
+  resolveRebuyDecision,
   startTournamentClock,
   advanceBlindLevelIfDue,
   forceAdvanceBlindLevel,
@@ -667,7 +670,10 @@ function finishRitRevealInner(roomId: string) {
   recordHandHistory(room, result);
   updatePlayerStats(room, result);
   syncPasjonaciResults(room);
-  if (result.eliminatedTokens?.length) processTournamentEliminations(room, result.eliminatedTokens);
+  if (result.eliminatedTokens?.length) {
+    const { offeredRebuy } = handleTournamentBusts(room, result.eliminatedTokens);
+    announceRebuyOffers(roomId, room, offeredRebuy);
+  }
   broadcastRoomState(room);
   io.to(roomId).emit('game:hand-result', result);
   const desc = describeHandResult(room);
@@ -715,9 +721,20 @@ function maybeRecordPasjonaciTournament(room: Room): void {
   const ts = room.tournamentState;
   if (!room.settings.pasjonaciTable || !ts || !ts.finalResults || ts.pasjonaciRecorded) return;
   ts.pasjonaciRecorded = true;
-  const poolTotal = (room.settings.tournamentSettings?.startingStack ?? 0) * ts.registeredTokens.length;
+  const totalBuyIns = ts.registeredTokens.length + ts.rebuyTokens.length;
+  const poolTotal = (room.settings.tournamentSettings?.startingStack ?? 0) * totalBuyIns;
   const results = ts.finalResults.map((r) => ({ nick: r.nick, place: r.place, amount: r.amount ?? 0 }));
   recordTournament(results, ts.registeredTokens.length, poolTotal);
+}
+
+// Called right after handleTournamentBusts offers one or more busted players
+// a rebuy — announces it in chat so the table knows why the next hand is
+// paused (see tryStartNextHand's pendingRebuys guard).
+function announceRebuyOffers(roomId: string, room: Room, offeredRebuy: string[]): void {
+  for (const token of offeredRebuy) {
+    const nick = room.players.find((p) => p.sessionToken === token)?.nick ?? '?';
+    emitSystemMessage(roomId, `💸 ${nick} może dokupić się do turnieju — ${Math.round(REBUY_DECIDE_MS / 1000)}s na decyzję`);
+  }
 }
 
 // ── Player stats update ──────────────────────────────────────────────────
@@ -985,6 +1002,14 @@ function tryStartNextHand(roomId: string): boolean {
   // Guard: don't start a new hand if one is already in progress (not in showdown/null)
   if (room.gameState && room.gameState.phase !== 'showdown') {
     console.log(`[tryStartNextHand] Skipped — hand already in progress (phase=${room.gameState.phase})`);
+    return false;
+  }
+
+  // Guard: a busted player is still deciding whether to rebuy — the table
+  // stays paused until every pending decision resolves (see game:rebuy-decide
+  // and the watchdog's auto-decline-on-timeout below).
+  if (room.tournamentState?.pendingRebuys.length) {
+    console.log(`[tryStartNextHand] Skipped — ${room.tournamentState.pendingRebuys.length} pending rebuy decision(s)`);
     return false;
   }
 
@@ -1271,7 +1296,10 @@ function progressGameInner(roomId: string) {
     recordHandHistory(room, result);
     updatePlayerStats(room, result);
     syncPasjonaciResults(room);
-    if (result.eliminatedTokens?.length) processTournamentEliminations(room, result.eliminatedTokens);
+    if (result.eliminatedTokens?.length) {
+    const { offeredRebuy } = handleTournamentBusts(room, result.eliminatedTokens);
+    announceRebuyOffers(roomId, room, offeredRebuy);
+  }
     broadcastRoomState(room);
     io.to(roomId).emit('game:hand-result', result);
 
@@ -1300,7 +1328,10 @@ function progressGameInner(roomId: string) {
       recordHandHistory(room, result);
       updatePlayerStats(room, result);
       syncPasjonaciResults(room);
-      if (result.eliminatedTokens?.length) processTournamentEliminations(room, result.eliminatedTokens);
+      if (result.eliminatedTokens?.length) {
+    const { offeredRebuy } = handleTournamentBusts(room, result.eliminatedTokens);
+    announceRebuyOffers(roomId, room, offeredRebuy);
+  }
       broadcastRoomState(room);
       io.to(roomId).emit('game:hand-result', result);
 
@@ -1601,11 +1632,16 @@ io.on('connection', (socket) => {
     // Tournament: a voluntary early exit counts as elimination (place is
     // assigned from however many registered players are still active) —
     // otherwise the tournament could never reach "1 player left" and finish.
+    // No rebuy offer here — leaving is a deliberate choice, not a bust.
     if (room?.settings.mode === 'tournament' && room.tournamentState?.status === 'running') {
+      const hadPendingRebuy = room.tournamentState.pendingRebuys.length > 0;
+      room.tournamentState.pendingRebuys = room.tournamentState.pendingRebuys.filter((p) => p.sessionToken !== sessionToken);
       processTournamentEliminations(room, [sessionToken]);
       if (room.tournamentState.finalResults) {
         emitSystemMessage(roomId!, `🏆 Tournament finished! Winner: ${room.tournamentState.finalResults[0]?.nick ?? '?'}`);
         maybeRecordPasjonaciTournament(room);
+      } else if (hadPendingRebuy && room.tournamentState.pendingRebuys.length === 0) {
+        tryStartNextHand(roomId!);
       }
     }
 
@@ -1836,6 +1872,34 @@ io.on('connection', (socket) => {
     // the outcome — no reason to keep waiting on players who haven't voted yet.
     if (!payload.accept || isRunItTwiceVoteComplete(room)) {
       withRoomLock(roomId, () => resolveRunItTwiceVote(roomId));
+    }
+  });
+
+  socket.on('game:rebuy-decide', (payload, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback?.({ ok: false, error: 'No session' });
+    const room = roomManager.getRoom(roomId);
+    if (!room?.tournamentState) return callback?.({ ok: false, error: 'Room not found' });
+
+    const nick = room.players.find((p) => p.sessionToken === sessionToken)?.nick ?? '?';
+    if (!room.tournamentState.pendingRebuys.some((p) => p.sessionToken === sessionToken)) {
+      return callback?.({ ok: false, error: 'No pending rebuy decision' });
+    }
+
+    resolveRebuyDecision(room, sessionToken, payload.rebuy);
+    callback?.({ ok: true });
+    emitSystemMessage(
+      roomId,
+      payload.rebuy ? `💰 ${nick} dokupił się i wraca do gry!` : `👋 ${nick} zakończył udział w turnieju`,
+    );
+    broadcastRoomState(room);
+
+    if (room.tournamentState.finalResults) {
+      emitSystemMessage(roomId, `🏆 Tournament finished! Winner: ${room.tournamentState.finalResults[0]?.nick ?? '?'}`);
+      maybeRecordPasjonaciTournament(room);
+    } else if (room.tournamentState.pendingRebuys.length === 0) {
+      tryStartNextHand(roomId);
     }
   });
 
@@ -2680,6 +2744,25 @@ setInterval(() => {
         console.log(`[tournament] Room ${roomId}: advanced to blind level ${lvl} (${room.settings.smallBlind}/${room.settings.bigBlind})`);
         emitSystemMessage(roomId, `⬆️ Level ${lvl}: blinds ${room.settings.smallBlind}/${room.settings.bigBlind}`);
         broadcastRoomState(room);
+      }
+
+      // A busted player who didn't decide in time counts as a decline —
+      // this is deliberately coarse (checked on the same 15s tick, not a
+      // dedicated per-decision timer like Run It Twice) since the table is
+      // fully paused anyway, so a few extra seconds of latency here is harmless.
+      const ts = room.tournamentState;
+      const expired = ts.pendingRebuys.filter((p) => Date.now() > p.deadline);
+      if (expired.length > 0) {
+        for (const p of expired) {
+          resolveRebuyDecision(room, p.sessionToken, false);
+          emitSystemMessage(roomId, `⏱ ${p.nick} nie zdążył zdecydować — koniec udziału w turnieju`);
+        }
+        if (ts.finalResults) {
+          emitSystemMessage(roomId, `🏆 Tournament finished! Winner: ${ts.finalResults[0]?.nick ?? '?'}`);
+          maybeRecordPasjonaciTournament(room);
+        }
+        broadcastRoomState(room);
+        if (ts.pendingRebuys.length === 0 && !ts.finalResults) tryStartNextHand(roomId);
       }
     }
 

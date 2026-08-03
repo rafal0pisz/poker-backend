@@ -115,6 +115,13 @@ export interface TournamentPlacement {
   amount?: number; // filled in once the tournament finishes (payout for this place)
 }
 
+// A busted player deciding whether to rebuy — see TournamentState.pendingRebuys.
+export interface RebuyOffer {
+  sessionToken: string;
+  nick: string;
+  deadline: number;
+}
+
 export interface TournamentState {
   status: 'registering' | 'running' | 'finished';
   // 1-indexed — matches BlindLevel.level
@@ -122,9 +129,21 @@ export interface TournamentState {
   levelStartedAt: number | null;
   // Every sessionToken that ever bought in (admin at creation + everyone who
   // joined, including late registrants). Grows only — used to size the prize
-  // pool (startingStack × registeredTokens.length). Never shrinks even if a
-  // player later leaves or busts.
+  // pool alongside rebuyTokens below. Never shrinks even if a player later
+  // leaves or busts, and a rebuy does NOT add a new entry here — a rebuy is
+  // an extra buy-in for someone already registered, not a new entrant.
   registeredTokens: string[];
+  // sessionTokens who have already used their one allowed rebuy — each token
+  // appears at most once here (single re-entry, not unlimited). Every
+  // registered player gets exactly one shot at this, tracked independently
+  // of eliminationOrder since a successful rebuy never gets an elimination
+  // entry for that first bust.
+  rebuyTokens: string[];
+  // Busted players currently deciding whether to rebuy — the table pauses
+  // (tryStartNextHand refuses to start) until every entry here is resolved,
+  // either by the player's own game:rebuy-decide or by the watchdog timing
+  // them out (counted as a decline).
+  pendingRebuys: RebuyOffer[];
   // Finishing order as players are eliminated (place 1 = winner, pushed last).
   eliminationOrder: TournamentPlacement[];
   // Filled in once status becomes 'finished' — final payouts for places that
@@ -432,6 +451,13 @@ export interface ClientToServerEvents {
   // Run It Twice — vote on an all-in runout
   'game:run-it-twice-decide': (
     payload: { accept: boolean },
+    callback?: (response: { ok: boolean; error?: string }) => void,
+  ) => void;
+
+  // Tournament — a just-busted player decides whether to use their one
+  // allowed rebuy (see TournamentState.pendingRebuys).
+  'game:rebuy-decide': (
+    payload: { rebuy: boolean },
     callback?: (response: { ok: boolean; error?: string }) => void,
   ) => void;
 

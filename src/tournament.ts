@@ -8,6 +8,9 @@ import type { BlindLevel, Room, TournamentPlacement, TournamentSettings, Tournam
 
 export const MIN_TOURNAMENT_PLAYERS = 3;
 
+// How long a busted player has to decide whether to use their one rebuy.
+export const REBUY_DECIDE_MS = 20_000;
+
 /** Standard blind-level presets offered at table creation. */
 export const BLIND_LEVEL_PRESETS: Record<'turbo' | 'standard' | 'deep', { label: string; levels: BlindLevel[] }> = {
   turbo: {
@@ -43,6 +46,8 @@ export function createTournamentState(): TournamentState {
     currentLevel: 1,
     levelStartedAt: null,
     registeredTokens: [],
+    rebuyTokens: [],
+    pendingRebuys: [],
     eliminationOrder: [],
     finalResults: null,
   };
@@ -71,7 +76,11 @@ function payoutShares(registeredCount: number): number[] {
 function computeFinalResults(room: Room): TournamentPlacement[] {
   const ts = room.tournamentState!;
   const settings = room.settings.tournamentSettings!;
-  const pool = settings.startingStack * ts.registeredTokens.length;
+  // Pool = one buy-in per registrant + one extra buy-in per rebuy used — a
+  // rebuy adds money to the pool without adding a new entrant, so it must
+  // NOT change payoutShares' place-count logic below.
+  const totalBuyIns = ts.registeredTokens.length + ts.rebuyTokens.length;
+  const pool = settings.startingStack * totalBuyIns;
   const shares = payoutShares(ts.registeredTokens.length);
 
   return ts.eliminationOrder
@@ -124,6 +133,72 @@ export function processTournamentEliminations(room: Room, sessionTokens: string[
   }
 
   finalizeTournamentIfDone(room);
+}
+
+/** True if this registered player still has their one rebuy available right now. */
+export function canRebuy(room: Room, sessionToken: string): boolean {
+  const ts = room.tournamentState;
+  const settings = room.settings.tournamentSettings;
+  if (!ts || !settings) return false;
+  if (ts.rebuyTokens.includes(sessionToken)) return false;
+  return ts.currentLevel <= settings.lateRegistrationUntilLevel;
+}
+
+/**
+ * Call this instead of processTournamentEliminations whenever players bust
+ * out of a hand — for each token, either offers a rebuy decision (deferring
+ * elimination until they decide) or eliminates them immediately if their
+ * rebuy isn't available anymore. Returns the tokens a rebuy was just offered
+ * to, so the caller can announce it in chat.
+ */
+export function handleTournamentBusts(room: Room, sessionTokens: string[]): { offeredRebuy: string[] } {
+  const ts = room.tournamentState;
+  if (!ts || ts.status !== 'running' || sessionTokens.length === 0) return { offeredRebuy: [] };
+
+  const toEliminate: string[] = [];
+  const offeredRebuy: string[] = [];
+
+  for (const token of sessionTokens) {
+    if (!ts.registeredTokens.includes(token)) continue;
+    if (ts.eliminationOrder.some((e) => e.sessionToken === token)) continue;
+    if (ts.pendingRebuys.some((p) => p.sessionToken === token)) continue;
+
+    if (canRebuy(room, token)) {
+      const nick = room.players.find((p) => p.sessionToken === token)?.nick ?? token.slice(0, 6);
+      ts.pendingRebuys.push({ sessionToken: token, nick, deadline: Date.now() + REBUY_DECIDE_MS });
+      offeredRebuy.push(token);
+    } else {
+      toEliminate.push(token);
+    }
+  }
+
+  if (toEliminate.length) processTournamentEliminations(room, toEliminate);
+  return { offeredRebuy };
+}
+
+/**
+ * Resolves a pending rebuy decision (player's own choice, or the watchdog
+ * timing them out as a decline). Safe to call for a token that isn't
+ * actually pending (no-op).
+ */
+export function resolveRebuyDecision(room: Room, sessionToken: string, rebuy: boolean): void {
+  const ts = room.tournamentState;
+  const settings = room.settings.tournamentSettings;
+  if (!ts || !settings) return;
+  if (!ts.pendingRebuys.some((p) => p.sessionToken === sessionToken)) return;
+  ts.pendingRebuys = ts.pendingRebuys.filter((p) => p.sessionToken !== sessionToken);
+
+  if (rebuy) {
+    ts.rebuyTokens.push(sessionToken);
+    const player = room.players.find((p) => p.sessionToken === sessionToken);
+    if (player) {
+      player.chips = settings.startingStack;
+      player.totalBuyIn += settings.startingStack;
+      player.status = 'waiting';
+    }
+  } else {
+    processTournamentEliminations(room, [sessionToken]);
+  }
 }
 
 /** Starts the tournament clock — call once when the admin starts the first hand. */
