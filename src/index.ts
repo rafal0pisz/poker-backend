@@ -52,6 +52,8 @@ import {
   editSession,
   removePlayer,
   upsertSession,
+  recordTournament,
+  getTournaments,
   type LeagueSessionResult,
 } from './league-store.js';
 import {
@@ -88,6 +90,12 @@ app.get('/', (_req, res) => {
 // is no client-facing "submit" endpoint.
 app.get('/api/pasjonaci', (_req, res) => {
   res.json({ ok: true, league: getPasjonaciView() });
+});
+
+// Finished Pasjonaci tournaments — a completely separate record from the
+// cash-game ledger above (see recordTournament / maybeRecordPasjonaciTournament).
+app.get('/api/pasjonaci/tournaments', (_req, res) => {
+  res.json({ ok: true, tournaments: getTournaments() });
 });
 
 // Anyone can record their own payment as paid — no password, matches "each
@@ -666,6 +674,7 @@ function finishRitRevealInner(roomId: string) {
   if (desc) emitSystemMessage(roomId, desc);
   if (room.tournamentState?.finalResults) {
     emitSystemMessage(roomId, `🏆 Tournament finished! Winner: ${room.tournamentState.finalResults[0]?.nick ?? '?'}`);
+      maybeRecordPasjonaciTournament(room);
   }
 
   clearActionTimer(roomId);
@@ -683,7 +692,10 @@ function finishRitRevealInner(roomId: string) {
 // the last hand's update, not the whole session, since this always
 // overwrites the same session (keyed by roomId) rather than appending.
 function syncPasjonaciResults(room: Room): void {
-  if (!room.settings.pasjonaciTable) return;
+  // Tournament chips aren't real buy-ins/results and must never feed the
+  // weekly cash-game ledger — those get recorded separately, and only once,
+  // by maybeRecordPasjonaciTournament below.
+  if (!room.settings.pasjonaciTable || room.settings.mode === 'tournament') return;
   const activeSummary = room.players
     .filter((p) => p.status !== 'spectator')
     .map((p) => ({ nick: p.nick, totalBuyIn: p.totalBuyIn, finalChips: p.chips, netResult: p.chips - p.totalBuyIn }));
@@ -693,6 +705,19 @@ function syncPasjonaciResults(room: Room): void {
   const activeNicks = new Set(activeSummary.map((s) => s.nick));
   const results = [...activeSummary, ...leftSummary.filter((s) => !activeNicks.has(s.nick))];
   upsertSession(room.id, results);
+}
+
+// Called after every tournament elimination — records the final standings to
+// the separate Pasjonaci "Turnieje" list exactly once, the moment the
+// tournament actually finishes. No-ops for non-Pasjonaci tables, tournaments
+// still in progress, or a tournament whose result was already recorded.
+function maybeRecordPasjonaciTournament(room: Room): void {
+  const ts = room.tournamentState;
+  if (!room.settings.pasjonaciTable || !ts || !ts.finalResults || ts.pasjonaciRecorded) return;
+  ts.pasjonaciRecorded = true;
+  const poolTotal = (room.settings.tournamentSettings?.startingStack ?? 0) * ts.registeredTokens.length;
+  const results = ts.finalResults.map((r) => ({ nick: r.nick, place: r.place, amount: r.amount ?? 0 }));
+  recordTournament(results, ts.registeredTokens.length, poolTotal);
 }
 
 // ── Player stats update ──────────────────────────────────────────────────
@@ -1254,6 +1279,7 @@ function progressGameInner(roomId: string) {
     if (desc) emitSystemMessage(roomId, desc);
     if (room.tournamentState?.finalResults) {
       emitSystemMessage(roomId, `🏆 Tournament finished! Winner: ${room.tournamentState.finalResults[0]?.nick ?? '?'}`);
+      maybeRecordPasjonaciTournament(room);
     }
 
     clearActionTimer(roomId); // hand over
@@ -1282,6 +1308,7 @@ function progressGameInner(roomId: string) {
       if (desc) emitSystemMessage(roomId, desc);
       if (room.tournamentState?.finalResults) {
         emitSystemMessage(roomId, `🏆 Tournament finished! Winner: ${room.tournamentState.finalResults[0]?.nick ?? '?'}`);
+      maybeRecordPasjonaciTournament(room);
       }
 
       clearActionTimer(roomId); // hand over
@@ -1578,6 +1605,7 @@ io.on('connection', (socket) => {
       processTournamentEliminations(room, [sessionToken]);
       if (room.tournamentState.finalResults) {
         emitSystemMessage(roomId!, `🏆 Tournament finished! Winner: ${room.tournamentState.finalResults[0]?.nick ?? '?'}`);
+        maybeRecordPasjonaciTournament(room);
       }
     }
 

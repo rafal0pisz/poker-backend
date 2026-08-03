@@ -130,6 +130,11 @@ export interface TournamentState {
   // Filled in once status becomes 'finished' — final payouts for places that
   // won a share of the pool (1st/2nd/3rd, or 1st/2nd only if ≤2 registered).
   finalResults: TournamentPlacement[] | null;
+  // Set once this tournament's final standings have been written to the
+  // Pasjonaci "Turnieje" record (pasjonaciTable rooms only) — prevents
+  // double-recording since the finish condition can be observed more than
+  // once (e.g. re-checked on a later hand-result event).
+  pasjonaciRecorded?: boolean;
 }
 
 export type HandPhase = 'preflop' | 'flop' | 'draw' | 'pineapple-discard' | 'turn' | 'river' | 'showdown';

@@ -63,10 +63,30 @@ export interface LeaguePeriod {
   payments?: Payment[];
 }
 
+// A finished tournament's final standings — completely separate from the
+// cash-game sessions/periods/balances above. Tournament chips aren't real
+// money and don't feed the weekly ranking or settlement; this is purely a
+// historical record shown in its own "Turnieje" tab.
+export interface TournamentRecordEntry {
+  nick: string;
+  place: number; // 1 = winner
+  amount: number; // prize won (0 if this place wasn't paid)
+}
+
+export interface TournamentRecord {
+  id: string;
+  number: number; // 1, 2, 3... — used for the "Turniej N" label
+  finishedAt: number;
+  totalPlayers: number;
+  poolTotal: number;
+  results: TournamentRecordEntry[]; // sorted by place ascending
+}
+
 interface PasjonaciData {
   sessions: LeagueSession[];
   periods: LeaguePeriod[];
   allTimePayments?: Payment[]; // same idea, scoped to the "all time" view
+  tournaments?: TournamentRecord[];
 }
 
 function loadStore(): PasjonaciData {
@@ -80,6 +100,7 @@ function loadStore(): PasjonaciData {
       sessions: data.sessions ?? [],
       periods: data.periods ?? [],
       allTimePayments: data.allTimePayments ?? [],
+      tournaments: data.tournaments ?? [],
     };
   } catch (err) {
     // Logged loudly on purpose: this path means either a fresh ledger (fine,
@@ -90,7 +111,7 @@ function loadStore(): PasjonaciData {
       `[Pasjonaci] Could not read ${DATA_FILE} — starting with an EMPTY ledger. If this isn't the first run, the data volume is likely missing or misconfigured. Reason:`,
       err instanceof Error ? err.message : err,
     );
-    return { sessions: [], periods: [] };
+    return { sessions: [], periods: [], tournaments: [] };
   }
 }
 
@@ -140,6 +161,34 @@ export function upsertSession(roomId: string, results: LeagueSessionResult[]): v
     store.sessions.push({ id: roomId, playedAt: Date.now(), results });
   }
   persist();
+}
+
+// Called once, right when a Pasjonaci-tagged tournament table finishes —
+// completely separate from upsertSession/the weekly cash-game ledger above.
+// Tournament chips aren't real money and are never mixed into the Ranking.
+export function recordTournament(
+  results: TournamentRecordEntry[],
+  totalPlayers: number,
+  poolTotal: number,
+): TournamentRecord {
+  const store = getStore();
+  if (!store.tournaments) store.tournaments = [];
+  const record: TournamentRecord = {
+    id: randomUUID(),
+    number: store.tournaments.length + 1,
+    finishedAt: Date.now(),
+    totalPlayers,
+    poolTotal,
+    results: [...results].sort((a, b) => a.place - b.place),
+  };
+  store.tournaments.push(record);
+  persist();
+  return record;
+}
+
+export function getTournaments(): TournamentRecord[] {
+  const store = getStore();
+  return [...(store.tournaments ?? [])].sort((a, b) => b.number - a.number);
 }
 
 // ── Admin operations (password-gated in index.ts) ──────────────────────────
