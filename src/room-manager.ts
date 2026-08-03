@@ -4,6 +4,7 @@ import { customAlphabet } from 'nanoid';
 import type { Card } from './deck.js';
 import type { Player, Room, RoomSettings, ChatMessage } from './types.js';
 import { isDrawmahaVariant } from './game-engine.js';
+import { canRegisterForTournament, createTournamentState } from './tournament.js';
 
 const generateRoomId = customAlphabet('23456789ABCDEFGHJKMNPQRSTUVWXYZ', 6);
 const generateSessionToken = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 32);
@@ -23,11 +24,13 @@ class RoomManager {
       roomId = generateRoomId();
     }
     const sessionToken = generateSessionToken();
+    const isTournament = settings.mode === 'tournament' && !!settings.tournamentSettings;
+    const startingChips = isTournament ? settings.tournamentSettings!.startingStack : settings.startingBuyIn;
 
     const admin: Player = {
       sessionToken,
       nick: this.sanitizeNick(nick),
-      chips: settings.startingBuyIn,
+      chips: startingChips,
       seat: 0,
       role: 'admin',
       status: 'waiting',
@@ -36,8 +39,8 @@ class RoomManager {
       currentBet: 0,
       totalBetInHand: 0,
       hasActedThisRound: false,
-      preferredVariant: 'texas',
-      totalBuyIn: settings.startingBuyIn, // initial buy-in from room creation
+      preferredVariant: isTournament ? settings.tournamentSettings!.variant : 'texas',
+      totalBuyIn: startingChips, // initial buy-in from room creation
       pendingChipsAdjustment: 0,
       pendingAction: null,
       handContribution: 0,
@@ -56,6 +59,11 @@ class RoomManager {
       paused: false,
       handHistory: [],
     };
+
+    if (isTournament) {
+      room.tournamentState = createTournamentState();
+      room.tournamentState.registeredTokens.push(sessionToken);
+    }
 
     this.rooms.set(roomId, room);
     this.sessionToRoom.set(sessionToken, roomId);
@@ -121,6 +129,12 @@ class RoomManager {
       return { ok: false, error: 'All seats are taken' };
     }
 
+    const isTournament = room.settings.mode === 'tournament' && !!room.settings.tournamentSettings;
+    if (isTournament) {
+      const gate = canRegisterForTournament(room);
+      if (!gate.ok) return { ok: false, error: gate.error };
+    }
+
     const cleanNick = this.sanitizeNick(nick);
     if (room.players.some((p) => p.nick.toLowerCase() === cleanNick.toLowerCase())) {
       return { ok: false, error: 'This nickname is already taken in this room' };
@@ -131,21 +145,22 @@ class RoomManager {
     while (occupiedSeats.has(seat)) seat++;
 
     const newSessionToken = generateSessionToken();
+    const startingChips = isTournament ? room.settings.tournamentSettings!.startingStack : 0;
 
     const newPlayer: Player = {
       sessionToken: newSessionToken,
       nick: cleanNick,
-      chips: 0,
+      chips: startingChips,
       seat,
       role: 'player',
-      status: 'spectator',
+      status: isTournament ? 'waiting' : 'spectator',
       connected: true,
       lastSeenAt: Date.now(),
       currentBet: 0,
       totalBetInHand: 0,
       hasActedThisRound: false,
-      preferredVariant: 'texas',
-      totalBuyIn: 0, // chips received via admin panel (tracked separately)
+      preferredVariant: isTournament ? room.settings.tournamentSettings!.variant : 'texas',
+      totalBuyIn: startingChips, // chips received via admin panel (tracked separately)
       pendingChipsAdjustment: 0,
       pendingAction: null,
       handContribution: 0,
@@ -155,6 +170,10 @@ class RoomManager {
     room.players.push(newPlayer);
     room.players.sort((a, b) => a.seat - b.seat); // keep seat order on join
     this.sessionToRoom.set(newSessionToken, roomId);
+
+    if (isTournament) {
+      room.tournamentState!.registeredTokens.push(newSessionToken);
+    }
 
     return { ok: true, room, sessionToken: newSessionToken };
   }

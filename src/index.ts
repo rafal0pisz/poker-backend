@@ -54,6 +54,14 @@ import {
   upsertSession,
   type LeagueSessionResult,
 } from './league-store.js';
+import {
+  MIN_TOURNAMENT_PLAYERS,
+  processTournamentEliminations,
+  startTournamentClock,
+  advanceBlindLevelIfDue,
+  forceAdvanceBlindLevel,
+  validateTournamentSettings,
+} from './tournament.js';
 
 const PORT = Number(process.env.PORT) || 4000;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -651,10 +659,14 @@ function finishRitRevealInner(roomId: string) {
   recordHandHistory(room, result);
   updatePlayerStats(room, result);
   syncPasjonaciResults(room);
+  if (result.eliminatedTokens?.length) processTournamentEliminations(room, result.eliminatedTokens);
   broadcastRoomState(room);
   io.to(roomId).emit('game:hand-result', result);
   const desc = describeHandResult(room);
   if (desc) emitSystemMessage(roomId, desc);
+  if (room.tournamentState?.finalResults) {
+    emitSystemMessage(roomId, `🏆 Tournament finished! Winner: ${room.tournamentState.finalResults[0]?.nick ?? '?'}`);
+  }
 
   clearActionTimer(roomId);
   setTimeout(() => {
@@ -1234,11 +1246,15 @@ function progressGameInner(roomId: string) {
     recordHandHistory(room, result);
     updatePlayerStats(room, result);
     syncPasjonaciResults(room);
+    if (result.eliminatedTokens?.length) processTournamentEliminations(room, result.eliminatedTokens);
     broadcastRoomState(room);
     io.to(roomId).emit('game:hand-result', result);
 
     const desc = describeHandResult(room);
     if (desc) emitSystemMessage(roomId, desc);
+    if (room.tournamentState?.finalResults) {
+      emitSystemMessage(roomId, `🏆 Tournament finished! Winner: ${room.tournamentState.finalResults[0]?.nick ?? '?'}`);
+    }
 
     clearActionTimer(roomId); // hand over
     const resultDelay1 = isDrawmahaVariant(room.gameState.variant) ? 9000 : 6000;
@@ -1258,11 +1274,15 @@ function progressGameInner(roomId: string) {
       recordHandHistory(room, result);
       updatePlayerStats(room, result);
       syncPasjonaciResults(room);
+      if (result.eliminatedTokens?.length) processTournamentEliminations(room, result.eliminatedTokens);
       broadcastRoomState(room);
       io.to(roomId).emit('game:hand-result', result);
 
       const desc = describeHandResult(room);
       if (desc) emitSystemMessage(roomId, desc);
+      if (room.tournamentState?.finalResults) {
+        emitSystemMessage(roomId, `🏆 Tournament finished! Winner: ${room.tournamentState.finalResults[0]?.nick ?? '?'}`);
+      }
 
       clearActionTimer(roomId); // hand over
       const resultDelay2 = isDrawmahaVariant(room.gameState.variant) ? 9000 : 6000;
@@ -1428,6 +1448,10 @@ io.on('connection', (socket) => {
       if (settings.maxSeats < 2 || settings.maxSeats > 9) {
         return callback({ ok: false, error: 'Number of seats must be between 2 and 9' });
       }
+      if (settings.mode === 'tournament') {
+        const tErr = validateTournamentSettings(settings.tournamentSettings);
+        if (tErr) return callback({ ok: false, error: tErr });
+      }
 
       const { room, sessionToken } = roomManager.createRoom(payload.nick, settings);
       if (payload.source === 'pasjonaci') room.settings.pasjonaciTable = true;
@@ -1547,6 +1571,16 @@ io.on('connection', (socket) => {
       disconnectGraceTimers.delete(sessionToken);
     }
 
+    // Tournament: a voluntary early exit counts as elimination (place is
+    // assigned from however many registered players are still active) —
+    // otherwise the tournament could never reach "1 player left" and finish.
+    if (room?.settings.mode === 'tournament' && room.tournamentState?.status === 'running') {
+      processTournamentEliminations(room, [sessionToken]);
+      if (room.tournamentState.finalResults) {
+        emitSystemMessage(roomId!, `🏆 Tournament finished! Winner: ${room.tournamentState.finalResults[0]?.nick ?? '?'}`);
+      }
+    }
+
     const result = roomManager.removePlayer(sessionToken);
     sessionToSocket.delete(sessionToken);
     if (result?.room) {
@@ -1575,12 +1609,23 @@ io.on('connection', (socket) => {
     }
 
     const eligible = room.players.filter((p) => p.chips > 0 && p.connected);
-    if (eligible.length < 2) {
+    const isTournament = room.settings.mode === 'tournament';
+    if (isTournament && eligible.length < MIN_TOURNAMENT_PLAYERS) {
+      return callback?.({ ok: false, error: `Tournament requires at least ${MIN_TOURNAMENT_PLAYERS} players` });
+    }
+    if (!isTournament && eligible.length < 2) {
       return callback?.({ ok: false, error: 'Need at least 2 players with chips' });
+    }
+
+    if (isTournament && room.tournamentState && room.tournamentState.status === 'registering') {
+      startTournamentClock(room);
     }
 
     if (tryStartNextHand(roomId)) {
       emitSystemMessage(roomId, '🎰 Game started');
+      if (isTournament) {
+        emitSystemMessage(roomId, `🏆 Tournament started — level 1: ${room.settings.smallBlind}/${room.settings.bigBlind}`);
+      }
       if (room.settings.timeBankEnabled !== false) {
         emitSystemMessage(roomId, '⏱️ Time Bank is on — each player can call +Time twice this session, +30 seconds each time.');
       }
@@ -1863,6 +1908,9 @@ io.on('connection', (socket) => {
     if (!room) return callback?.({ ok: false, error: 'Room not found' });
     const player = room.players.find((p) => p.sessionToken === sessionToken);
     if (!player) return callback?.({ ok: false, error: 'Player not found' });
+    if (room.settings.mode === 'tournament') {
+      return callback?.({ ok: false, error: "Tournament has a fixed variant — Dealer's Choice is disabled" });
+    }
 
     const allowed: GameVariant[] = ['texas', 'omaha', 'omaha-pl', 'omaha5', 'omaha-hl', 'drawmaha', 'drawmaha-pl', 'pineapple', 'pineapple-classic'];
     if (!allowed.includes(payload.variant)) {
@@ -1921,6 +1969,9 @@ io.on('connection', (socket) => {
     if (!room) return callback({ ok: false, error: 'Room not found' });
     const player = room.players.find((p) => p.sessionToken === sessionToken);
     if (!player) return callback({ ok: false, error: 'Player not found' });
+    if (room.settings.mode === 'tournament') {
+      return callback({ ok: false, error: 'Tournament does not allow rebuys' });
+    }
     if (player.chips > 0) return callback({ ok: false, error: 'You still have chips' });
     const amount = Math.floor(payload.amount);
     if (amount < 1 || amount > 100000) return callback({ ok: false, error: 'Invalid amount' });
@@ -2121,6 +2172,24 @@ io.on('connection', (socket) => {
     callback({ ok: true });
   });
 
+  socket.on('admin:advance-blind-level', (callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) return callback?.({ ok: false, error: 'No session' });
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback?.({ ok: false, error: 'Room not found' });
+    const adminPlayer = room.players.find(p => p.sessionToken === sessionToken && (p.role === 'admin' || p.role === 'vice-admin'));
+    if (!adminPlayer) return callback?.({ ok: false, error: 'Not admin' });
+
+    if (!forceAdvanceBlindLevel(room)) {
+      return callback?.({ ok: false, error: 'Cannot advance blind level' });
+    }
+    const lvl = room.tournamentState!.currentLevel;
+    emitSystemMessage(roomId, `⬆️ ${adminPlayer.nick} advanced to blind level ${lvl}: ${room.settings.smallBlind}/${room.settings.bigBlind}`);
+    broadcastRoomState(room);
+    callback?.({ ok: true });
+  });
+
   socket.on('admin:add-chips', (payload, callback) => {
     const sessionToken = socket.data.sessionToken;
     const roomId = socket.data.roomId;
@@ -2141,6 +2210,9 @@ io.on('connection', (socket) => {
 
     const target = room.players.find((p) => p.sessionToken === payload.targetSessionToken);
     if (!target) return callback?.({ ok: false, error: 'Player not found' });
+    if (room.settings.mode === 'tournament' && target.status === 'eliminated') {
+      return callback?.({ ok: false, error: 'Player is eliminated from the tournament — no rebuys' });
+    }
 
     // Determine if player is ACTIVELY IN a running hand (not showdown, not halted).
     // Showdown phase = hand is over, chips should be applied now even if gameState exists.
@@ -2571,6 +2643,18 @@ function advanceToNextAfterDisconnect(room: Room, roomId: string): void {
 // ── Watchdog: every 15s check for rooms stuck waiting on a disconnected player ──
 setInterval(() => {
   for (const [roomId, room] of (roomManager as any).rooms as Map<string, Room>) {
+    // ── Tournament blind-level clock — independent of whether a hand is in
+    // progress right now, so the level still ticks over during the pause
+    // between hands. ──────────────────────────────────────────────────────
+    if (room.settings.mode === 'tournament' && room.tournamentState?.status === 'running') {
+      if (advanceBlindLevelIfDue(room)) {
+        const lvl = room.tournamentState.currentLevel;
+        console.log(`[tournament] Room ${roomId}: advanced to blind level ${lvl} (${room.settings.smallBlind}/${room.settings.bigBlind})`);
+        emitSystemMessage(roomId, `⬆️ Level ${lvl}: blinds ${room.settings.smallBlind}/${room.settings.bigBlind}`);
+        broadcastRoomState(room);
+      }
+    }
+
     if (!room.gameState) continue;
     const { phase, currentPlayerSeat, actionDeadline } = room.gameState;
     const now = Date.now();

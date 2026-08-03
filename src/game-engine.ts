@@ -263,7 +263,8 @@ export function startNewHand(room: Room): { deck: Card[] } {
     if (
       player.status === 'sitting-out' ||
       player.status === 'disconnected' ||
-      player.status === 'spectator'
+      player.status === 'spectator' ||
+      player.status === 'eliminated'
     ) {
       continue;
     }
@@ -291,8 +292,11 @@ export function startNewHand(room: Room): { deck: Card[] } {
   const dealerSeat = getNextActiveSeat(room, prevDealer, false);
 
   // ===== DEALER'S CHOICE: variant comes from dealer's preference =====
+  // Tournament tables lock the variant at creation — no Dealer's Choice.
   const dealerPlayer = room.players.find((p) => p.seat === dealerSeat);
-  const variant: GameVariant = dealerPlayer?.preferredVariant || 'texas';
+  const variant: GameVariant = room.settings.mode === 'tournament' && room.settings.tournamentSettings
+    ? room.settings.tournamentSettings.variant
+    : dealerPlayer?.preferredVariant || 'texas';
 
   // Number of hole cards based on variant
   // Texas: 2, Omaha: 4, Drawmaha: 5
@@ -2069,6 +2073,17 @@ export function finishHand(room: Room): HandResult {
       w.netAmount = Math.max(0, w.amount - (player.totalBetInHand || 0));
     }
   }
+
+  // Detect eliminated players (busted out — chips reached 0 in this hand).
+  // Missing here would silently break tournament elimination tracking for
+  // every non-Drawmaha, non-Omaha-Hi-Lo variant (Texas, Omaha, Pineapple...).
+  result.eliminatedTokens = room.players
+    .filter((p) =>
+      p.chips === 0 &&
+      (p.status === 'playing' || p.status === 'all-in' || p.status === 'folded') &&
+      !result.winnings.some((w) => w.sessionToken === p.sessionToken),
+    )
+    .map((p) => p.sessionToken);
 
   result.playerStacks = room.players
     .filter((p) => p.status !== 'spectator')

@@ -17,7 +17,8 @@ export type PlayerStatus =
   | 'waiting'
   | 'no-chips'
   | 'disconnected'
-  | 'spectator';
+  | 'spectator'
+  | 'eliminated';
 
 export type ActionType = 'check' | 'call' | 'bet' | 'raise' | 'fold' | 'all-in';
 
@@ -79,6 +80,56 @@ export interface RoomSettings {
   // Pasjonaci ledger after every hand (see league-store.ts /
   // syncPasjonaciResults). Set once at room:create time; not player-facing.
   pasjonaciTable?: boolean;
+  // Table mode — 'cash' (default) is the existing free-play behavior.
+  // 'tournament' disables Dealer's Choice (single fixed variant) and enables
+  // blind-level progression, elimination tracking and payout placement.
+  mode?: 'cash' | 'tournament';
+  tournamentSettings?: TournamentSettings;
+}
+
+// ===== TOURNAMENT MODE =====
+
+export interface BlindLevel {
+  level: number; // 1-indexed, matches TournamentState.currentLevel display
+  smallBlind: number;
+  bigBlind: number;
+  durationSec: number;
+}
+
+export interface TournamentSettings {
+  // Single fixed variant for the whole tournament — no Dealer's Choice.
+  variant: GameVariant;
+  startingStack: number;
+  blindLevels: BlindLevel[];
+  // New players may register up to and including this blind level (1-indexed).
+  // Once the tournament has advanced past this level, room:join rejects new
+  // (non-reconnecting) players.
+  lateRegistrationUntilLevel: number;
+}
+
+export interface TournamentPlacement {
+  sessionToken: string;
+  nick: string;
+  place: number; // 1 = winner
+  eliminatedAt: number;
+  amount?: number; // filled in once the tournament finishes (payout for this place)
+}
+
+export interface TournamentState {
+  status: 'registering' | 'running' | 'finished';
+  // 1-indexed — matches BlindLevel.level
+  currentLevel: number;
+  levelStartedAt: number | null;
+  // Every sessionToken that ever bought in (admin at creation + everyone who
+  // joined, including late registrants). Grows only — used to size the prize
+  // pool (startingStack × registeredTokens.length). Never shrinks even if a
+  // player later leaves or busts.
+  registeredTokens: string[];
+  // Finishing order as players are eliminated (place 1 = winner, pushed last).
+  eliminationOrder: TournamentPlacement[];
+  // Filled in once status becomes 'finished' — final payouts for places that
+  // won a share of the pool (1st/2nd/3rd, or 1st/2nd only if ≤2 registered).
+  finalResults: TournamentPlacement[] | null;
 }
 
 export type HandPhase = 'preflop' | 'flop' | 'draw' | 'pineapple-discard' | 'turn' | 'river' | 'showdown';
@@ -303,6 +354,8 @@ export interface Room {
   // MAX_HAND_HISTORY (see game-engine.ts). In-memory only, like everything
   // else here: lost on server restart, not persisted across sessions.
   handHistory: HandResult[];
+  // Only present when settings.mode === 'tournament'.
+  tournamentState?: TournamentState;
 }
 
 // ===== CLIENT → SERVER EVENTS =====
@@ -313,8 +366,14 @@ export interface ClientToServerEvents {
   'room:create': (
     // source: 'pasjonaci' tags the room so results silently sync to the
     // shared Pasjonaci ledger — set only by the /pasjonaci page.
+    // settings.mode/tournamentSettings: set only by the tournament creation flow.
     payload: { nick: string; settings: RoomSettings; source?: 'pasjonaci' },
     callback: (response: CreateRoomResponse) => void,
+  ) => void;
+
+  // Admin: manually skip to the next blind level (tournament mode only)
+  'admin:advance-blind-level': (
+    callback?: (response: { ok: boolean; error?: string }) => void,
   ) => void;
 
   'room:join': (
