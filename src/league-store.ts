@@ -198,6 +198,16 @@ export function getTournaments(): TournamentRecord[] {
   return [...(store.tournaments ?? [])].sort((a, b) => b.number - a.number);
 }
 
+// Admin-only — removes a manually-added or mistaken tournament record.
+export function deleteTournament(id: string): boolean {
+  const store = getStore();
+  const before = (store.tournaments ?? []).length;
+  store.tournaments = (store.tournaments ?? []).filter((t) => t.id !== id);
+  if (store.tournaments.length === before) return false;
+  persist();
+  return true;
+}
+
 // ── Admin operations (password-gated in index.ts) ──────────────────────────
 
 export function deleteSession(id: string): boolean {

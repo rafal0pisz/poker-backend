@@ -54,7 +54,9 @@ import {
   upsertSession,
   recordTournament,
   getTournaments,
+  deleteTournament,
   type LeagueSessionResult,
+  type TournamentRecordEntry,
 } from './league-store.js';
 import {
   MIN_TOURNAMENT_PLAYERS,
@@ -190,6 +192,43 @@ app.post('/api/pasjonaci/admin/remove-player', (req, res) => {
     return;
   }
   removePlayer(nick);
+  res.json({ ok: true });
+});
+
+// Manually add a tournament that finished outside the app (or before this
+// recording feature existed) — same shape recordTournament produces
+// automatically for an in-app tournament, just admin-entered.
+app.post('/api/pasjonaci/admin/tournament/add', (req, res) => {
+  if (!checkPasjonaciPassword(req, res)) return;
+  const { results, totalPlayers, poolTotal, rebuyCount } = req.body ?? {};
+  if (
+    !Array.isArray(results) || results.length === 0 ||
+    typeof totalPlayers !== 'number' ||
+    typeof poolTotal !== 'number' ||
+    typeof rebuyCount !== 'number'
+  ) {
+    res.status(400).json({ ok: false, error: 'Nieprawidłowe dane' });
+    return;
+  }
+  const clean: TournamentRecordEntry[] = [];
+  for (const r of results) {
+    if (typeof r?.nick !== 'string' || !r.nick.trim() || typeof r?.place !== 'number' || typeof r?.amount !== 'number') {
+      res.status(400).json({ ok: false, error: 'Nieprawidłowe dane wyniku' });
+      return;
+    }
+    clean.push({ nick: r.nick.trim(), place: r.place, amount: r.amount });
+  }
+  const record = recordTournament(clean, totalPlayers, poolTotal, rebuyCount);
+  res.json({ ok: true, tournament: record });
+});
+
+app.post('/api/pasjonaci/admin/tournament/:id/delete', (req, res) => {
+  if (!checkPasjonaciPassword(req, res)) return;
+  const found = deleteTournament(req.params.id);
+  if (!found) {
+    res.status(404).json({ ok: false, error: 'Nie znaleziono turnieju' });
+    return;
+  }
   res.json({ ok: true });
 });
 
