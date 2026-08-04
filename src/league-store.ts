@@ -79,7 +79,11 @@ export interface TournamentRecord {
   finishedAt: number;
   totalPlayers: number;
   poolTotal: number;
-  results: TournamentRecordEntry[]; // sorted by place ascending
+  // Total number of rebuys used across the whole tournament — the pool
+  // already reflects each rebuy's extra buy-in; this is just the visible
+  // summary count requested alongside it.
+  rebuyCount: number;
+  results: TournamentRecordEntry[]; // ALL registered players, sorted by place ascending — not just the paid places
 }
 
 interface PasjonaciData {
@@ -170,6 +174,7 @@ export function recordTournament(
   results: TournamentRecordEntry[],
   totalPlayers: number,
   poolTotal: number,
+  rebuyCount: number,
 ): TournamentRecord {
   const store = getStore();
   if (!store.tournaments) store.tournaments = [];
@@ -179,10 +184,12 @@ export function recordTournament(
     finishedAt: Date.now(),
     totalPlayers,
     poolTotal,
+    rebuyCount,
     results: [...results].sort((a, b) => a.place - b.place),
   };
   store.tournaments.push(record);
   persist();
+  console.log(`[Pasjonaci] Recorded "Turniej ${record.number}" — ${totalPlayers} players, ${rebuyCount} rebuy(s), pool ${poolTotal}, ${results.length} placements`);
   return record;
 }
 

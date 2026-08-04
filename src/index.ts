@@ -717,14 +717,36 @@ function syncPasjonaciResults(room: Room): void {
 // the separate Pasjonaci "Turnieje" list exactly once, the moment the
 // tournament actually finishes. No-ops for non-Pasjonaci tables, tournaments
 // still in progress, or a tournament whose result was already recorded.
+//
+// IMPORTANT: builds the recorded list from eliminationOrder (every
+// registered player), not from finalResults — finalResults only holds the
+// PAID places (top 3, or top 2 for a 2-entrant field), so using it directly
+// silently dropped every out-of-the-money finisher from the saved record.
 function maybeRecordPasjonaciTournament(room: Room): void {
   const ts = room.tournamentState;
-  if (!room.settings.pasjonaciTable || !ts || !ts.finalResults || ts.pasjonaciRecorded) return;
+  if (!room.settings.pasjonaciTable) return;
+  if (!ts) {
+    console.warn('[Pasjonaci] maybeRecordPasjonaciTournament: pasjonaciTable room has no tournamentState — skipping');
+    return;
+  }
+  if (!ts.finalResults) {
+    console.warn(`[Pasjonaci] maybeRecordPasjonaciTournament called before finalResults was set (status=${ts.status}) — skipping`);
+    return;
+  }
+  if (ts.pasjonaciRecorded) return; // already recorded, nothing to do
   ts.pasjonaciRecorded = true;
+
   const totalBuyIns = ts.registeredTokens.length + ts.rebuyTokens.length;
   const poolTotal = (room.settings.tournamentSettings?.startingStack ?? 0) * totalBuyIns;
-  const results = ts.finalResults.map((r) => ({ nick: r.nick, place: r.place, amount: r.amount ?? 0 }));
-  recordTournament(results, ts.registeredTokens.length, poolTotal);
+  const amountByToken = new Map(ts.finalResults.map((r) => [r.sessionToken, r.amount ?? 0]));
+  const results = ts.eliminationOrder.map((e) => ({
+    nick: e.nick,
+    place: e.place,
+    amount: amountByToken.get(e.sessionToken) ?? 0,
+  }));
+
+  console.log(`[Pasjonaci] Tournament finished in room ${room.id} — recording ${results.length} placements (${ts.registeredTokens.length} entrants, ${ts.rebuyTokens.length} rebuys, pool ${poolTotal})`);
+  recordTournament(results, ts.registeredTokens.length, poolTotal, ts.rebuyTokens.length);
 }
 
 // Called right after handleTournamentBusts offers one or more busted players

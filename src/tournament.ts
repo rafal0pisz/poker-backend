@@ -1,8 +1,10 @@
 // Tournament mode — single-table elimination tournaments.
 // Layered on top of the existing cash-game room/hand engine: a tournament
 // room is a normal Room with settings.mode === 'tournament' and a populated
-// tournamentState. Nothing here touches Pasjonaci — tournament results are
-// entirely separate (see the confirmed MVP scope).
+// tournamentState. This module never touches Pasjonaci directly — a finished
+// pasjonaciTable tournament is recorded separately by
+// maybeRecordPasjonaciTournament in index.ts, entirely apart from the
+// weekly cash-game ledger (see league-store.ts's recordTournament).
 
 import type { BlindLevel, Room, TournamentPlacement, TournamentSettings, TournamentState } from './types.js';
 
@@ -108,6 +110,7 @@ function finalizeTournamentIfDone(room: Room): void {
   ts.status = 'finished';
   ts.finalResults = computeFinalResults(room);
   ts.levelStartedAt = null;
+  console.log(`[tournament] Room ${room.id} finished — ${ts.eliminationOrder.length} entrants placed, winner: ${ts.eliminationOrder.find((e) => e.place === 1)?.nick ?? '?'}`);
 }
 
 /**
