@@ -71,6 +71,10 @@ export interface TournamentRecordEntry {
   nick: string;
   place: number; // 1 = winner
   amount: number; // prize won (0 if this place wasn't paid)
+  // Whether THIS player used their one allowed rebuy — needed (together with
+  // TournamentRecord.startingStack) to compute their net profit/loss
+  // (amount - buy-in). Absent on records saved before this field existed.
+  rebuy?: boolean;
 }
 
 export interface TournamentRecord {
@@ -83,6 +87,10 @@ export interface TournamentRecord {
   // already reflects each rebuy's extra buy-in; this is just the visible
   // summary count requested alongside it.
   rebuyCount: number;
+  // Per-player buy-in — each entry's total invested is startingStack ×
+  // (1 + (rebuy ? 1 : 0)). Absent on records saved before this field
+  // existed, in which case net profit/loss can't be computed.
+  startingStack?: number;
   results: TournamentRecordEntry[]; // ALL registered players, sorted by place ascending — not just the paid places
 }
 
@@ -175,6 +183,7 @@ export function recordTournament(
   totalPlayers: number,
   poolTotal: number,
   rebuyCount: number,
+  startingStack: number,
 ): TournamentRecord {
   const store = getStore();
   if (!store.tournaments) store.tournaments = [];
@@ -185,6 +194,7 @@ export function recordTournament(
     totalPlayers,
     poolTotal,
     rebuyCount,
+    startingStack,
     results: [...results].sort((a, b) => a.place - b.place),
   };
   store.tournaments.push(record);

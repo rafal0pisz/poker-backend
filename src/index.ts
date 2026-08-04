@@ -200,12 +200,13 @@ app.post('/api/pasjonaci/admin/remove-player', (req, res) => {
 // automatically for an in-app tournament, just admin-entered.
 app.post('/api/pasjonaci/admin/tournament/add', (req, res) => {
   if (!checkPasjonaciPassword(req, res)) return;
-  const { results, totalPlayers, poolTotal, rebuyCount } = req.body ?? {};
+  const { results, totalPlayers, poolTotal, rebuyCount, startingStack } = req.body ?? {};
   if (
     !Array.isArray(results) || results.length === 0 ||
     typeof totalPlayers !== 'number' ||
     typeof poolTotal !== 'number' ||
-    typeof rebuyCount !== 'number'
+    typeof rebuyCount !== 'number' ||
+    typeof startingStack !== 'number'
   ) {
     res.status(400).json({ ok: false, error: 'Nieprawidłowe dane' });
     return;
@@ -216,9 +217,9 @@ app.post('/api/pasjonaci/admin/tournament/add', (req, res) => {
       res.status(400).json({ ok: false, error: 'Nieprawidłowe dane wyniku' });
       return;
     }
-    clean.push({ nick: r.nick.trim(), place: r.place, amount: r.amount });
+    clean.push({ nick: r.nick.trim(), place: r.place, amount: r.amount, rebuy: !!r.rebuy });
   }
-  const record = recordTournament(clean, totalPlayers, poolTotal, rebuyCount);
+  const record = recordTournament(clean, totalPlayers, poolTotal, rebuyCount, startingStack);
   res.json({ ok: true, tournament: record });
 });
 
@@ -775,17 +776,19 @@ function maybeRecordPasjonaciTournament(room: Room): void {
   if (ts.pasjonaciRecorded) return; // already recorded, nothing to do
   ts.pasjonaciRecorded = true;
 
+  const startingStack = room.settings.tournamentSettings?.startingStack ?? 0;
   const totalBuyIns = ts.registeredTokens.length + ts.rebuyTokens.length;
-  const poolTotal = (room.settings.tournamentSettings?.startingStack ?? 0) * totalBuyIns;
+  const poolTotal = startingStack * totalBuyIns;
   const amountByToken = new Map(ts.finalResults.map((r) => [r.sessionToken, r.amount ?? 0]));
   const results = ts.eliminationOrder.map((e) => ({
     nick: e.nick,
     place: e.place,
     amount: amountByToken.get(e.sessionToken) ?? 0,
+    rebuy: ts.rebuyTokens.includes(e.sessionToken),
   }));
 
   console.log(`[Pasjonaci] Tournament finished in room ${room.id} — recording ${results.length} placements (${ts.registeredTokens.length} entrants, ${ts.rebuyTokens.length} rebuys, pool ${poolTotal})`);
-  recordTournament(results, ts.registeredTokens.length, poolTotal, ts.rebuyTokens.length);
+  recordTournament(results, ts.registeredTokens.length, poolTotal, ts.rebuyTokens.length, startingStack);
 }
 
 // Called right after handleTournamentBusts offers one or more busted players
