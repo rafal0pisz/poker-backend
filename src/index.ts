@@ -411,6 +411,18 @@ function scheduleBotDrawSubmissions(roomId: string) {
   });
 }
 
+// Removing a player mid-Drawmaha-draw-phase (room:leave / admin:remove-player)
+// must also drop their drawState entry — otherwise it lingers forever and
+// isDrawPhaseComplete/isRevealPhaseComplete would still see it (before their
+// own room.players-based filtering) and, if the removal happens to be the
+// last thing blocking the phase, nothing re-checks completion afterward.
+function cleanupDrawStateForRemovedPlayer(room: Room, sessionToken: string): void {
+  const ds = room.gameState?.drawState;
+  if (!ds) return;
+  delete ds.playerStates[sessionToken];
+  delete ds.openCards[sessionToken];
+}
+
 // Per-room processing queue — prevents concurrent progressGame calls
 // that could corrupt game state (action timer fires same time as player action)
 const roomProcessing = new Map<string, boolean>();
@@ -1672,16 +1684,25 @@ io.on('connection', (socket) => {
 
     // If player is leaving during an active hand and has a live bet (e.g. blind),
     // fold them first so their currentBet gets collected into the pot correctly.
+    // Drawmaha draw phase doesn't support folding (performAction rejects it) —
+    // clean up their drawState entry instead so they don't leave a stale
+    // "hasn't drawn yet" record that would block the phase from ever completing.
+    let mayHaveUnblockedDraw = false;
     if (room?.gameState && leavingPlayer) {
       const isInHand = leavingPlayer.status === 'playing' || leavingPlayer.status === 'all-in';
       if (isInHand) {
-        performAction(room, sessionToken, 'fold');
-        // If their fold ends the hand, run progressGame to settle the pot
-        if (isHandComplete(room)) {
-          // Let progressGame handle finishHand via its normal path.
-          // Calling finishHand directly here would race with the existing
-          // progressGame timeout and potentially start two hands.
-          progressGame(roomId!);
+        if (room.gameState.phase === 'draw') {
+          cleanupDrawStateForRemovedPlayer(room, sessionToken);
+          mayHaveUnblockedDraw = true;
+        } else {
+          performAction(room, sessionToken, 'fold');
+          // If their fold ends the hand, run progressGame to settle the pot
+          if (isHandComplete(room)) {
+            // Let progressGame handle finishHand via its normal path.
+            // Calling finishHand directly here would race with the existing
+            // progressGame timeout and potentially start two hands.
+            progressGame(roomId!);
+          }
         }
       }
     }
@@ -1715,6 +1736,9 @@ io.on('connection', (socket) => {
       broadcastRoomState(result.room);
       if (leavingNick) {
         emitSystemMessage(result.roomId, `${leavingNick} left the room`);
+      }
+      if (mayHaveUnblockedDraw) {
+        withRoomLock(result.roomId, () => progressGame(result.roomId));
       }
     }
     if (roomId) socket.leave(roomId);
@@ -2498,12 +2522,22 @@ io.on('connection', (socket) => {
       io.to(targetSocketId).emit('room:closed', 'You have been removed from the room by the admin');
     }
 
+    // Same stale-drawState risk as room:leave — clean up before removing so a
+    // kick mid-"wymiana" can't leave the draw phase permanently stuck.
+    const wasInDrawPhase = room.gameState?.phase === 'draw';
+    if (wasInDrawPhase) {
+      cleanupDrawStateForRemovedPlayer(room, payload.targetSessionToken);
+    }
+
     const result = roomManager.removePlayer(payload.targetSessionToken);
     sessionToSocket.delete(payload.targetSessionToken);
     if (result?.room) {
       broadcastRoomState(result.room);
       if (targetNick) {
         emitSystemMessage(result.roomId, `${admin.nick} removed ${targetNick} from the room`);
+      }
+      if (wasInDrawPhase) {
+        withRoomLock(result.roomId, () => progressGame(result.roomId));
       }
     }
     callback?.({ ok: true });
@@ -2877,7 +2911,13 @@ setInterval(() => {
             performDrawDiscard(r, p.sessionToken, [], deck);
             console.log(`[watchdog] Auto stand-pat: ${p.nick}`);
           }
-          if (pending.length > 0) { broadcastRoomState(r); progressGame(roomId); }
+          // Also re-check completion even with no pending live player — a
+          // player who departed mid-draw (left/kicked) could otherwise leave
+          // the phase complete-but-never-advanced with nothing left to force.
+          if (pending.length > 0 || isDrawPhaseComplete(r)) {
+            broadcastRoomState(r);
+            progressGame(roomId);
+          }
         });
       }
     }

@@ -789,7 +789,13 @@ export function isPineappleDiscardComplete(room: Room): boolean {
  */
 export function isDrawPhaseComplete(room: Room): boolean {
   if (!room.gameState?.drawState) return false;
-  const states = Object.values(room.gameState.drawState.playerStates);
+  // Only count players still seated — a player removed mid-draw (left or
+  // kicked) leaves a stale entry behind that would otherwise block this
+  // from ever returning true again, hanging the whole table.
+  const seated = new Set(room.players.map((p) => p.sessionToken));
+  const states = Object.entries(room.gameState.drawState.playerStates)
+    .filter(([token]) => seated.has(token))
+    .map(([, s]) => s);
   return states.length > 0 && states.every((s) => s.hasDrawn);
 }
 
@@ -882,7 +888,10 @@ export function getNextDecidingPlayer(room: Room): Player | null {
  */
 export function isRevealPhaseComplete(room: Room): boolean {
   if (!room.gameState?.drawState) return false;
-  const states = Object.values(room.gameState.drawState.playerStates);
+  const seated = new Set(room.players.map((p) => p.sessionToken));
+  const states = Object.entries(room.gameState.drawState.playerStates)
+    .filter(([token]) => seated.has(token))
+    .map(([, s]) => s);
   return states.length > 0 && states.every((s) => s.hasDecided);
 }
 
