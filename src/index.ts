@@ -52,6 +52,7 @@ import {
   editSession,
   removePlayer,
   upsertSession,
+  resetLedger,
   recordTournament,
   getTournaments,
   deleteTournament,
@@ -105,13 +106,14 @@ app.get('/api/pasjonaci/tournaments', (_req, res) => {
 
 // Anyone can record their own payment as paid — no password, matches "each
 // person settles their own debt" rather than a single admin action. This
-// permanently offsets the settlement calculation (not the Ranking, which
-// always stays pure poker performance) — a new session afterwards only
-// adds fresh imbalance on top, it doesn't resurrect the paid-off debt.
+// permanently offsets that ONE session's settlement (settlement is entirely
+// per-session — no aggregation across sessions) — it does not touch the
+// session's results, which stay pure poker performance regardless of who's
+// paid whom.
 app.post('/api/pasjonaci/settlement/pay', (req, res) => {
-  const { periodId, from, to, amount } = req.body ?? {};
+  const { sessionId, from, to, amount } = req.body ?? {};
   if (
-    (typeof periodId !== 'number' && periodId !== 'all-time') ||
+    typeof sessionId !== 'string' ||
     typeof from !== 'string' ||
     typeof to !== 'string' ||
     typeof amount !== 'number'
@@ -119,21 +121,21 @@ app.post('/api/pasjonaci/settlement/pay', (req, res) => {
     res.status(400).json({ ok: false, error: 'Nieprawidłowe dane' });
     return;
   }
-  const found = recordPayment(periodId, from, to, amount);
+  const found = recordPayment(sessionId, from, to, amount);
   if (!found) {
-    res.status(404).json({ ok: false, error: 'Nie znaleziono okresu rozliczeniowego' });
+    res.status(404).json({ ok: false, error: 'Nie znaleziono sesji' });
     return;
   }
   res.json({ ok: true });
 });
 
 app.post('/api/pasjonaci/settlement/undo-payment', (req, res) => {
-  const { periodId, paymentId } = req.body ?? {};
-  if ((typeof periodId !== 'number' && periodId !== 'all-time') || typeof paymentId !== 'string') {
+  const { sessionId, paymentId } = req.body ?? {};
+  if (typeof sessionId !== 'string' || typeof paymentId !== 'string') {
     res.status(400).json({ ok: false, error: 'Nieprawidłowe dane' });
     return;
   }
-  const found = undoPayment(periodId, paymentId);
+  const found = undoPayment(sessionId, paymentId);
   if (!found) {
     res.status(404).json({ ok: false, error: 'Nie znaleziono płatności' });
     return;
@@ -156,6 +158,16 @@ function checkPasjonaciPassword(req: express.Request, res: express.Response): bo
 
 app.post('/api/pasjonaci/admin/verify', (req, res) => {
   if (!checkPasjonaciPassword(req, res)) return;
+  res.json({ ok: true });
+});
+
+// Wipes the entire cash-game ledger — every session, its results, and its
+// payment history. Tournaments are a separate record and are untouched.
+// Irreversible, so this stays behind the admin password like every other
+// destructive operation here.
+app.post('/api/pasjonaci/admin/reset', (req, res) => {
+  if (!checkPasjonaciPassword(req, res)) return;
+  resetLedger();
   res.json({ ok: true });
 });
 

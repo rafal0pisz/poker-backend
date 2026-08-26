@@ -14,8 +14,6 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 
-const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-
 // Railway sets this automatically once a volume is attached to the service.
 // Falls back to a local ./data folder for development. Logged loudly at
 // startup — if RAILWAY_VOLUME_MOUNT_PATH is ever unset in production, this
@@ -39,28 +37,28 @@ export interface LeagueSessionResult {
 // hand rather than appended, so a single poker night is always exactly one
 // session no matter how many hands it takes, and a mid-session server
 // restart loses at most the last hand's update, not the whole night.
+//
+// Settlement is entirely self-contained per session — there is no
+// aggregation across sessions (no weekly/all-time running balance). Each
+// night's debts are its own thing: computed straight from that session's
+// results, and "paid" is recorded against that session only.
 export interface LeagueSession {
   id: string; // == roomId
   playedAt: number; // last updated
   results: LeagueSessionResult[];
+  payments?: Payment[];
 }
 
-// A real, recorded payment between two players — not a UI flag. Once
-// recorded it permanently offsets the settlement calculation, so a debt
-// that's been paid off stays paid off even as new sessions get added
-// (those only create new, separate imbalance on top of a zeroed-out base).
+// A real, recorded payment between two players for ONE session — not a UI
+// flag. Once recorded it permanently offsets that session's settlement, so
+// a debt that's been paid off stays paid off even if the session is edited
+// later (an edit only rebalances that session's own numbers).
 export interface Payment {
   id: string;
   from: string;
   to: string;
   amount: number;
   paidAt: number;
-}
-
-export interface LeaguePeriod {
-  startedAt: number;
-  endedAt: number | null; // null = currently open ("this week")
-  payments?: Payment[];
 }
 
 // A finished tournament's final standings — completely separate from the
@@ -96,8 +94,6 @@ export interface TournamentRecord {
 
 interface PasjonaciData {
   sessions: LeagueSession[];
-  periods: LeaguePeriod[];
-  allTimePayments?: Payment[]; // same idea, scoped to the "all time" view
   tournaments?: TournamentRecord[];
 }
 
@@ -105,13 +101,9 @@ function loadStore(): PasjonaciData {
   try {
     const raw = fs.readFileSync(DATA_FILE, 'utf-8');
     const data = JSON.parse(raw);
-    console.log(
-      `[Pasjonaci] Loaded ${data.sessions?.length ?? 0} session(s), ${data.periods?.length ?? 0} period(s) from ${DATA_FILE}`,
-    );
+    console.log(`[Pasjonaci] Loaded ${data.sessions?.length ?? 0} session(s) from ${DATA_FILE}`);
     return {
       sessions: data.sessions ?? [],
-      periods: data.periods ?? [],
-      allTimePayments: data.allTimePayments ?? [],
       tournaments: data.tournaments ?? [],
     };
   } catch (err) {
@@ -123,7 +115,7 @@ function loadStore(): PasjonaciData {
       `[Pasjonaci] Could not read ${DATA_FILE} — starting with an EMPTY ledger. If this isn't the first run, the data volume is likely missing or misconfigured. Reason:`,
       err instanceof Error ? err.message : err,
     );
-    return { sessions: [], periods: [], tournaments: [] };
+    return { sessions: [], tournaments: [] };
   }
 }
 
@@ -135,27 +127,20 @@ function saveStore(store: PasjonaciData): void {
 let cache: PasjonaciData | null = null;
 function getStore(): PasjonaciData {
   if (!cache) cache = loadStore();
-  if (cache.periods.length === 0) cache.periods.push({ startedAt: Date.now(), endedAt: null });
   return cache;
 }
 function persist(): void {
   if (cache) saveStore(cache);
 }
 
-// Auto-advances the open period past any full 7-day windows that have
-// elapsed since it started — computed lazily on read, no background timer
-// needed.
-function rollPeriodsForward(store: PasjonaciData): boolean {
-  let changed = false;
-  let open = store.periods[store.periods.length - 1];
-  while (open.endedAt === null && Date.now() - open.startedAt >= ONE_WEEK_MS) {
-    const endedAt = open.startedAt + ONE_WEEK_MS;
-    open.endedAt = endedAt;
-    open = { startedAt: endedAt, endedAt: null };
-    store.periods.push(open);
-    changed = true;
-  }
-  return changed;
+// Admin-only — wipes the entire cash-game ledger (every session, its
+// results, and its payment history). Tournaments are a separate record
+// (see recordTournament) and are untouched by this.
+export function resetLedger(): void {
+  const store = getStore();
+  store.sessions = [];
+  persist();
+  console.log('[Pasjonaci] Ledger reset — all sessions cleared');
 }
 
 // Called silently after every hand on a Pasjonaci-tagged table — upserts
@@ -163,7 +148,6 @@ function rollPeriodsForward(store: PasjonaciData): boolean {
 export function upsertSession(roomId: string, results: LeagueSessionResult[]): void {
   if (results.length === 0) return;
   const store = getStore();
-  rollPeriodsForward(store);
 
   const existing = store.sessions.find((s) => s.id === roomId);
   if (existing) {
@@ -239,24 +223,28 @@ export function editSession(id: string, results: LeagueSessionResult[]): boolean
 }
 
 // Strips a nick (case-insensitive) out of every session's results — used to
-// pull a player out of the ranking entirely. Sessions left with no
-// participants are dropped.
+// pull a player out of the history entirely. Any payment in that session
+// involving the removed nick goes with them (it no longer refers to a real
+// participant). Sessions left with no participants are dropped.
 export function removePlayer(nick: string): void {
   const store = getStore();
   const key = nickKey(nick);
   store.sessions = store.sessions
-    .map((s) => ({ ...s, results: s.results.filter((r) => nickKey(r.nick) !== key) }))
+    .map((s) => ({
+      ...s,
+      results: s.results.filter((r) => nickKey(r.nick) !== key),
+      payments: (s.payments ?? []).filter((p) => nickKey(p.from) !== key && nickKey(p.to) !== key),
+    }))
     .filter((s) => s.results.length > 0);
   persist();
 }
 
-// ── Balances & settlement ───────────────────────────────────────────────
-
-export interface PlayerBalance {
-  nick: string;
-  net: number;
-  sessionsPlayed: number;
-}
+// ── Per-session settlement ──────────────────────────────────────────────
+// No aggregation across sessions — each poker night settles on its own.
+// "Balance" here just means that session's own net results (nick + how
+// much they're up/down for that one night); settlement is the minimum set
+// of transfers that clears those numbers, adjusted for whatever's already
+// been paid within that same session.
 
 export interface Settlement {
   from: string;
@@ -264,52 +252,47 @@ export interface Settlement {
   amount: number;
 }
 
-function paymentList(store: PasjonaciData, periodId: number | 'all-time'): Payment[] | null {
-  if (periodId === 'all-time') {
-    if (!store.allTimePayments) store.allTimePayments = [];
-    return store.allTimePayments;
-  }
-  const period = store.periods.find((p) => p.startedAt === periodId);
-  if (!period) return null;
-  if (!period.payments) period.payments = [];
-  return period.payments;
+function findSession(store: PasjonaciData, sessionId: string): LeagueSession | undefined {
+  return store.sessions.find((s) => s.id === sessionId);
 }
 
 // Anyone can record their own payment — no password, matches "each person
-// settles their own debt". This permanently offsets the balance used for
-// settlement (see applyPayments) — it does NOT touch the Ranking, which
-// stays pure poker performance regardless of who's paid whom.
-export function recordPayment(
-  periodId: number | 'all-time',
-  from: string,
-  to: string,
-  amount: number,
-): boolean {
+// settles their own debt". This permanently offsets that session's
+// settlement (see applyPayments) — it does NOT touch the underlying
+// results, which stay pure poker performance regardless of who's paid whom.
+export function recordPayment(sessionId: string, from: string, to: string, amount: number): boolean {
   const store = getStore();
-  const list = paymentList(store, periodId);
-  if (!list) return false;
-  list.push({ id: randomUUID(), from, to, amount, paidAt: Date.now() });
+  const session = findSession(store, sessionId);
+  if (!session) return false;
+  if (!session.payments) session.payments = [];
+  session.payments.push({ id: randomUUID(), from, to, amount, paidAt: Date.now() });
   persist();
   return true;
 }
 
-// Undo a mistaken payment record — removes it entirely, so the settlement
-// calculation reverts to including that debt again.
-export function undoPayment(periodId: number | 'all-time', paymentId: string): boolean {
+// Undo a mistaken payment record — removes it entirely, so that session's
+// settlement reverts to including that debt again.
+export function undoPayment(sessionId: string, paymentId: string): boolean {
   const store = getStore();
-  const list = paymentList(store, periodId);
-  if (!list) return false;
-  const idx = list.findIndex((p) => p.id === paymentId);
+  const session = findSession(store, sessionId);
+  if (!session?.payments) return false;
+  const idx = session.payments.findIndex((p) => p.id === paymentId);
   if (idx === -1) return false;
-  list.splice(idx, 1);
+  session.payments.splice(idx, 1);
   persist();
   return true;
 }
 
-// Applies recorded payments on top of raw session balances — paying down a
-// debt moves the payer's balance toward zero and the payee's balance toward
-// zero by the same amount, so it always keeps the total exactly conserved.
-function applyPayments(balances: PlayerBalance[], payments: Payment[]): PlayerBalance[] {
+interface NetBalance {
+  nick: string;
+  net: number;
+}
+
+// Applies recorded payments on top of a session's raw net results — paying
+// down a debt moves the payer's balance toward zero and the payee's
+// balance toward zero by the same amount, so it always keeps the total
+// exactly conserved.
+function applyPayments(balances: NetBalance[], payments: Payment[]): NetBalance[] {
   if (!payments || payments.length === 0) return balances;
   const adjusted = balances.map((b) => ({ ...b }));
   const byKey = new Map(adjusted.map((b) => [nickKey(b.nick), b]));
@@ -328,23 +311,6 @@ function nickKey(nick: string): string {
   return nick.trim().toLowerCase();
 }
 
-export function computeBalances(sessions: LeagueSession[]): PlayerBalance[] {
-  const byKey = new Map<string, PlayerBalance>();
-  for (const session of sessions) {
-    for (const r of session.results) {
-      const key = nickKey(r.nick);
-      const existing = byKey.get(key);
-      if (existing) {
-        existing.net += r.netResult;
-        existing.sessionsPlayed += 1;
-      } else {
-        byKey.set(key, { nick: r.nick.trim(), net: r.netResult, sessionsPlayed: 1 });
-      }
-    }
-  }
-  return [...byKey.values()].sort((a, b) => b.net - a.net);
-}
-
 export interface RawSettlement {
   from: string;
   to: string;
@@ -353,7 +319,7 @@ export interface RawSettlement {
 
 // Classic greedy minimum-transaction debt settlement (same approach
 // Splitwise uses): largest debtor pays largest creditor, repeat.
-export function simplifyDebts(balances: PlayerBalance[]): RawSettlement[] {
+export function simplifyDebts(balances: NetBalance[]): RawSettlement[] {
   const creditors = balances
     .filter((b) => b.net > 0)
     .map((b) => ({ nick: b.nick, remaining: b.net }))
@@ -379,44 +345,33 @@ export function simplifyDebts(balances: PlayerBalance[]): RawSettlement[] {
   return settlements;
 }
 
-export interface LeaguePeriodView {
-  startedAt: number;
-  endedAt: number | null;
-  balances: PlayerBalance[]; // raw poker performance — never affected by payments
-  settlements: Settlement[]; // still-outstanding debt, after recorded payments
-  payments: Payment[]; // history, newest first — for the undo UI
+export interface SessionView {
+  id: string;
+  playedAt: number;
+  results: LeagueSessionResult[];
+  settlements: Settlement[]; // still-outstanding debt for THIS session, after recorded payments
+  payments: Payment[]; // history for THIS session, newest first — for the undo UI
 }
 
 export interface PasjonaciView {
-  currentPeriod: LeaguePeriodView;
-  pastPeriods: LeaguePeriodView[];
-  allTime: LeaguePeriodView;
-  sessions: LeagueSession[];
+  sessions: SessionView[]; // newest first
 }
 
-function periodView(
-  sessions: LeagueSession[],
-  startedAt: number,
-  endedAt: number | null,
-  payments: Payment[] = [],
-): LeaguePeriodView {
-  const inRange = sessions.filter((s) => s.playedAt >= startedAt && (endedAt === null || s.playedAt < endedAt));
-  const balances = computeBalances(inRange);
+function sessionView(session: LeagueSession): SessionView {
+  const balances: NetBalance[] = session.results.map((r) => ({ nick: r.nick, net: r.netResult }));
+  const payments = session.payments ?? [];
   const settlements = simplifyDebts(applyPayments(balances, payments));
-  return { startedAt, endedAt, balances, settlements, payments: [...payments].sort((a, b) => b.paidAt - a.paidAt) };
+  return {
+    id: session.id,
+    playedAt: session.playedAt,
+    results: session.results,
+    settlements,
+    payments: [...payments].sort((a, b) => b.paidAt - a.paidAt),
+  };
 }
 
 export function getPasjonaciView(): PasjonaciView {
   const store = getStore();
-  if (rollPeriodsForward(store)) persist();
-
-  const open = store.periods[store.periods.length - 1];
-  const past = store.periods.slice(0, -1);
-
-  return {
-    currentPeriod: periodView(store.sessions, open.startedAt, null, open.payments),
-    pastPeriods: past.map((p) => periodView(store.sessions, p.startedAt, p.endedAt, p.payments)).reverse(),
-    allTime: periodView(store.sessions, 0, null, store.allTimePayments),
-    sessions: [...store.sessions].sort((a, b) => b.playedAt - a.playedAt),
-  };
+  const sessions = [...store.sessions].sort((a, b) => b.playedAt - a.playedAt).map(sessionView);
+  return { sessions };
 }
