@@ -149,6 +149,11 @@ app.post('/api/pasjonaci/settlement/undo-payment', (req, res) => {
 // (not per-user accounts — matches the app's no-auth model elsewhere).
 const PASJONACI_PASSWORD = process.env.PASJONACI_PASSWORD || 'Pokero123!';
 
+// Pasjonaci's own photo meme pack — mirrors poker-frontend/src/lib/memes.ts.
+// Duplicated (not shared) since frontend and backend are separate deployments,
+// same pattern already used for GameVariant allowlists.
+const MEME_IDS = ['facepalm', 'balaclava', 'confused', 'hottub', 'boss'];
+
 function checkPasjonaciPassword(req: express.Request, res: express.Response): boolean {
   if (req.body?.password !== PASJONACI_PASSWORD) {
     res.status(403).json({ ok: false, error: 'Nieprawidłowe hasło' });
@@ -2682,8 +2687,20 @@ io.on('connection', (socket) => {
       return callback?.({ ok: false, error: 'No session' });
     }
 
-    if (payload.type !== 'text' && payload.type !== 'reaction') {
+    if (payload.type !== 'text' && payload.type !== 'reaction' && payload.type !== 'meme') {
       return callback?.({ ok: false, error: 'Invalid message type' });
+    }
+
+    // Memes are the Pasjonaci crew's own photo pack — keep them off regular
+    // tables server-side too, not just hidden in the picker UI.
+    if (payload.type === 'meme') {
+      const room = roomManager.getRoom(roomId);
+      if (!room?.settings.pasjonaciTable) {
+        return callback?.({ ok: false, error: 'Memes are only available on Pasjonaci tables' });
+      }
+      if (!MEME_IDS.includes(payload.content)) {
+        return callback?.({ ok: false, error: 'Unknown meme' });
+      }
     }
 
     const result = roomManager.addChatMessage(sessionToken, payload.type, payload.content);

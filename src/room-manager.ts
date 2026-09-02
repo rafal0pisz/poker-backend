@@ -286,7 +286,7 @@ class RoomManager {
 
   addChatMessage(
     sessionToken: string,
-    type: 'text' | 'reaction',
+    type: 'text' | 'reaction' | 'meme',
     content: string,
   ): { ok: true; message: ChatMessage } | { ok: false; error: string } {
     const room = this.getRoomBySessionToken(sessionToken);

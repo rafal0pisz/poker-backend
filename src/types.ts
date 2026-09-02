@@ -325,14 +325,14 @@ export interface RunItTwiceRevealState {
 
 // ===== CHAT =====
 
-export type ChatMessageType = 'text' | 'reaction' | 'system';
+export type ChatMessageType = 'text' | 'reaction' | 'meme' | 'system';
 
 export interface ChatMessage {
   id: string;
   type: ChatMessageType;
   senderSessionToken: string | null; // null for system messages
   senderNick: string; // for system: "System"
-  content: string; // text, or emoji for reaction
+  content: string; // text, emoji-reaction id, or meme id
   timestamp: number;
 }
 
@@ -526,7 +526,7 @@ export interface ClientToServerEvents {
 
   // Chat
   'chat:send': (
-    payload: { type: 'text' | 'reaction'; content: string },
+    payload: { type: 'text' | 'reaction' | 'meme'; content: string },
     callback?: (response: { ok: boolean; error?: string }) => void,
   ) => void;
 }
