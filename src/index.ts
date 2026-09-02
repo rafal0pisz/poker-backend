@@ -56,6 +56,7 @@ import {
   recordTournament,
   getTournaments,
   deleteTournament,
+  nickKey,
   type LeagueSessionResult,
   type TournamentRecordEntry,
 } from './league-store.js';
@@ -772,8 +773,14 @@ function syncPasjonaciResults(room: Room): void {
   const leftSummary = room.sessionSummary.map((s) => ({
     nick: s.nick, totalBuyIn: s.totalBuyIn, finalChips: s.finalChips, netResult: s.netResult,
   }));
-  const activeNicks = new Set(activeSummary.map((s) => s.nick));
-  const results = [...activeSummary, ...leftSummary.filter((s) => !activeNicks.has(s.nick))];
+  // Case-insensitive: a player who left as "Rafal" and rejoined as "rafal"
+  // (allowed — the room only blocks a nick collision against players
+  // currently seated, not ones who already left) must still be recognized
+  // as the same person here, or they'd show up as two separate rows in this
+  // session's results — and if their two net values had opposite signs,
+  // the settlement would read as one person owing themselves.
+  const activeNicks = new Set(activeSummary.map((s) => nickKey(s.nick)));
+  const results = [...activeSummary, ...leftSummary.filter((s) => !activeNicks.has(nickKey(s.nick)))];
   upsertSession(room.id, results);
 }
 

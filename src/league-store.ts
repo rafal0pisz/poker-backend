@@ -307,7 +307,7 @@ function applyPayments(balances: NetBalance[], payments: Payment[]): NetBalance[
 
 // Canonical key for matching nicks case-insensitively, keeping the first-seen
 // casing for display.
-function nickKey(nick: string): string {
+export function nickKey(nick: string): string {
   return nick.trim().toLowerCase();
 }
 
@@ -357,8 +357,27 @@ export interface PasjonaciView {
   sessions: SessionView[]; // newest first
 }
 
+// Merges results by nickKey (case-insensitive) before settling — a player
+// who left and rejoined the same table with a differently-cased nick (e.g.
+// "Rafal" then "rafal") would otherwise show up as two separate people in
+// session.results, and if their two net values had opposite signs,
+// simplifyDebts would produce a settlement that reads as one person owing
+// themselves. This merge happens purely at settlement-computation time, so
+// it fixes every existing session on read without editing/deleting any
+// stored data.
+function sessionBalances(session: LeagueSession): NetBalance[] {
+  const byKey = new Map<string, NetBalance>();
+  for (const r of session.results) {
+    const key = nickKey(r.nick);
+    const existing = byKey.get(key);
+    if (existing) existing.net += r.netResult;
+    else byKey.set(key, { nick: r.nick.trim(), net: r.netResult });
+  }
+  return [...byKey.values()];
+}
+
 function sessionView(session: LeagueSession): SessionView {
-  const balances: NetBalance[] = session.results.map((r) => ({ nick: r.nick, net: r.netResult }));
+  const balances = sessionBalances(session);
   const payments = session.payments ?? [];
   const settlements = simplifyDebts(applyPayments(balances, payments));
   return {
