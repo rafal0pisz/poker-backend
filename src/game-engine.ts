@@ -23,7 +23,13 @@ const { Hand } = pokersolverImport as any;
 // Any variant using Drawmaha's 5-card-hole / draw-phase / split-pot (Omaha +
 // Texas half) rules.
 export function isDrawmahaVariant(variant: GameVariant): boolean {
-  return variant === 'drawmaha' || variant === 'drawmaha-pl';
+  return variant === 'drawmaha';
+}
+
+// Texas Hold'em and Pineapple stay No-Limit; every other variant (Omaha,
+// Omaha5, Omaha Hi-Lo, Drawmaha) is Pot Limit only.
+export function isPotLimitVariant(variant: GameVariant): boolean {
+  return variant !== 'texas' && variant !== 'pineapple' && variant !== 'pineapple-classic';
 }
 
 /**
@@ -300,7 +306,7 @@ export function startNewHand(room: Room): { deck: Card[] } {
 
   // Number of hole cards based on variant
   // Texas: 2, Omaha: 4, Drawmaha: 5
-  const cardsPerPlayer = (variant === 'omaha' || variant === 'omaha-pl' || variant === 'omaha-hl') ? 4
+  const cardsPerPlayer = (variant === 'omaha' || variant === 'omaha-hl') ? 4
     : (variant === 'omaha5') ? 5
     : isDrawmahaVariant(variant) ? 5
     : (variant === 'pineapple' || variant === 'pineapple-classic') ? 3
@@ -466,8 +472,7 @@ export function performAction(
         return { ok: false, error: `Minimum raise is ${minRequired}` };
       }
       // Pot Limit raise cap
-      const plVariant = room.gameState.variant;
-      if ((plVariant === 'omaha-pl' || plVariant === 'drawmaha-pl') && !isAllIn) {
+      if (isPotLimitVariant(room.gameState.variant) && !isAllIn) {
         const toCall = room.gameState.currentBet - player.currentBet;
         // gameState.pot IS already the sum of all sidePots — adding sidePots again would double-count
         const betsOnTable = room.players.reduce((s, p) => s + (p.currentBet || 0), 0);
@@ -512,8 +517,7 @@ export function performAction(
         return { ok: false, error: 'No chips left' };
       }
       // Pot Limit: all-in only allowed if chips <= pot limit max
-      const plVariantAI = room.gameState.variant;
-      if (plVariantAI === 'omaha-pl' || plVariantAI === 'drawmaha-pl') {
+      if (isPotLimitVariant(room.gameState.variant)) {
         const toCallPL = room.gameState.currentBet - player.currentBet;
         // gameState.pot IS already sum of sidePots — don't add sidePots again
         const betsOnTablePL = room.players.reduce((s, p) => s + (p.currentBet || 0), 0);
@@ -1950,7 +1954,7 @@ export function finishHand(room: Room): HandResult {
       const holeCards = player.holeCards || [];
       const board = room.gameState!.communityCards;
 
-      if (variant === 'omaha' || variant === 'omaha-pl' || variant === 'omaha5') {
+      if (variant === 'omaha' || variant === 'omaha5') {
         const { hand, holeUsed, boardUsed } = solveOmaha(holeCards, board);
         return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };
       }
@@ -2108,7 +2112,7 @@ export function finishHand(room: Room): HandResult {
 // High+Low) — stacking a second board split on top of that would need its
 // own dedicated design, so for now those variants keep the existing
 // single-board runout behavior.
-const RUN_IT_TWICE_INELIGIBLE_VARIANTS: GameVariant[] = ['drawmaha', 'drawmaha-pl', 'omaha-hl'];
+const RUN_IT_TWICE_INELIGIBLE_VARIANTS: GameVariant[] = ['drawmaha', 'omaha-hl'];
 
 /**
  * True exactly once per hand, at the moment an all-in runout is first
@@ -2254,7 +2258,7 @@ export function evaluateBoardPots(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): { hand: any; winningHoleCards?: Card[]; winningBoardCards?: Card[] } => {
     const holeCards = player.holeCards || [];
-    if (variant === 'omaha' || variant === 'omaha-pl' || variant === 'omaha5') {
+    if (variant === 'omaha' || variant === 'omaha5') {
       const { hand, holeUsed, boardUsed } = solveOmaha(holeCards, board);
       return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };
     }

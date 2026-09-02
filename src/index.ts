@@ -2121,7 +2121,7 @@ io.on('connection', (socket) => {
       return callback?.({ ok: false, error: "Tournament has a fixed variant — Dealer's Choice is disabled" });
     }
 
-    const allowed: GameVariant[] = ['texas', 'omaha', 'omaha-pl', 'omaha5', 'omaha-hl', 'drawmaha', 'drawmaha-pl', 'pineapple', 'pineapple-classic'];
+    const allowed: GameVariant[] = ['texas', 'omaha', 'omaha5', 'omaha-hl', 'drawmaha', 'pineapple', 'pineapple-classic'];
     if (!allowed.includes(payload.variant)) {
       return callback?.({ ok: false, error: 'Unknown variant' });
     }

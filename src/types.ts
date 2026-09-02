@@ -7,7 +7,11 @@ export type PlayerRole = 'player' | 'vice-admin' | 'admin';
 // Texas:    2 hole cards + 5 community, best 5 of 7
 // Omaha:    4 hole cards + 5 community, must use EXACTLY 2 hole + 3 community
 // Drawmaha: 5 hole cards + draw phase after flop + 1-card reveal + split pot (Omaha half + Texas half)
-export type GameVariant = 'texas' | 'omaha' | 'omaha-pl' | 'omaha5' | 'omaha-hl' | 'drawmaha' | 'drawmaha-pl' | 'pineapple' | 'pineapple-classic';
+// Texas and Pineapple are always No-Limit; every other variant is always Pot
+// Limit — see isPotLimitVariant in game-engine.ts. There is no separate
+// "-pl" variant anymore (removed — Omaha/Omaha5/Omaha-HL/Drawmaha are
+// simply pot-limit by definition now, not a picker option).
+export type GameVariant = 'texas' | 'omaha' | 'omaha5' | 'omaha-hl' | 'drawmaha' | 'pineapple' | 'pineapple-classic';
 
 export type PlayerStatus =
   | 'playing'
