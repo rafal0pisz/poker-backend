@@ -1756,6 +1756,11 @@ io.on('connection', (socket) => {
 
     const result = roomManager.removePlayer(sessionToken);
     sessionToSocket.delete(sessionToken);
+    // Persist their final buy-in/chips to the Pasjonaci ledger right now —
+    // otherwise this player's pool only gets synced whenever the NEXT hand
+    // on this table happens to finish (see syncPasjonaciResults), which may
+    // never happen if they were one of the last players still seated.
+    if (room) syncPasjonaciResults(room);
     if (result?.room) {
       broadcastRoomState(result.room);
       if (leavingNick) {
@@ -2555,6 +2560,10 @@ io.on('connection', (socket) => {
 
     const result = roomManager.removePlayer(payload.targetSessionToken);
     sessionToSocket.delete(payload.targetSessionToken);
+    // Same as room:leave — a kicked player's final buy-in/chips must be
+    // persisted to the Pasjonaci ledger right now, not left to whenever (if
+    // ever) the next hand on this table happens to finish.
+    syncPasjonaciResults(room);
     if (result?.room) {
       broadcastRoomState(result.room);
       if (targetNick) {
