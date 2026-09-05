@@ -152,7 +152,7 @@ const PASJONACI_PASSWORD = process.env.PASJONACI_PASSWORD || 'Pokero123!';
 // Pasjonaci's own photo meme pack — mirrors poker-frontend/src/lib/memes.ts.
 // Duplicated (not shared) since frontend and backend are separate deployments,
 // same pattern already used for GameVariant allowlists.
-const MEME_IDS = ['facepalm', 'balaclava', 'confused', 'hottub', 'boss'];
+const MEME_IDS = ['facepalm', 'balaclava', 'confused', 'hottub', 'boss', 'blessing', 'badbeat', 'flex', 'moto'];
 
 function checkPasjonaciPassword(req: express.Request, res: express.Response): boolean {
   if (req.body?.password !== PASJONACI_PASSWORD) {
