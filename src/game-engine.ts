@@ -477,8 +477,12 @@ export function performAction(
         // gameState.pot IS already the sum of all sidePots — adding sidePots again would double-count
         const betsOnTable = room.players.reduce((s, p) => s + (p.currentBet || 0), 0);
         const effectivePot = room.gameState.pot + betsOnTable;
-        // PL max = effectivePot + 2×toCall (= call + potAfterCall)
-        const potFormula = effectivePot + 2 * toCall;
+        // PL max = myCurrentBet + effectivePot + 2×toCall (= call + potAfterCall).
+        // myCurrentBet matters whenever the player already has chips in this
+        // round before raising again — e.g. SB/BB preflop (their posted
+        // blind), or re-raising after an earlier bet this street. Dropping it
+        // silently under-caps exactly those players.
+        const potFormula = player.currentBet + effectivePot + 2 * toCall;
         // In PLO, if pot < minRaise (e.g. preflop with small blinds),
         // player is always allowed to raise at least minRaise
         const maxBet = Math.max(potFormula, minRequired);
@@ -522,8 +526,9 @@ export function performAction(
         // gameState.pot IS already sum of sidePots — don't add sidePots again
         const betsOnTablePL = room.players.reduce((s, p) => s + (p.currentBet || 0), 0);
         const effectivePotPL = room.gameState.pot + betsOnTablePL;
-        // PL max = effectivePot + 2×toCall (= call + potAfterCall)
-        const potFormulaAI = effectivePotPL + 2 * toCallPL;
+        // PL max = myCurrentBet + effectivePot + 2×toCall — see the matching
+        // comment in the 'bet'/'raise' case above for why myCurrentBet is needed.
+        const potFormulaAI = player.currentBet + effectivePotPL + 2 * toCallPL;
         const minReqAI = room.gameState.currentBet + room.gameState.minRaise;
         const potLimitMaxBet = Math.max(potFormulaAI, minReqAI);
         if (allInAmount > potLimitMaxBet) {
