@@ -4,14 +4,20 @@ import type { Card } from './deck.js';
 export type PlayerRole = 'player' | 'vice-admin' | 'admin';
 
 // Game variants for Dealer's Choice (Mix Poker)
-// Texas:    2 hole cards + 5 community, best 5 of 7
-// Omaha:    4 hole cards + 5 community, must use EXACTLY 2 hole + 3 community
-// Drawmaha: 5 hole cards + draw phase after flop + 1-card reveal + split pot (Omaha half + Texas half)
-// Texas and Pineapple are always No-Limit; every other variant is always Pot
-// Limit — see isPotLimitVariant in game-engine.ts. There is no separate
-// "-pl" variant anymore (removed — Omaha/Omaha5/Omaha-HL/Drawmaha are
-// simply pot-limit by definition now, not a picker option).
-export type GameVariant = 'texas' | 'omaha' | 'omaha5' | 'omaha-hl' | 'drawmaha' | 'pineapple' | 'pineapple-classic';
+// Texas:      2 hole cards + 5 community, best 5 of 7
+// Omaha:      4 hole cards + 5 community, must use EXACTLY 2 hole + 3 community
+// Courchevel: Omaha-HL with 5 hole cards, except the first flop card is dealt
+//             face-up before the preflop betting round (so preflop already
+//             shows 1 board card) — see startNewHand/advancePhase.
+// Drawmaha:   5 hole cards + draw phase after flop + 1-card reveal + split pot (Omaha half + Texas half)
+// five-card-draw: 5 hole cards, NO community cards at all — bet, discard
+//             0-5 and redraw once, bet again, showdown (standard high hand).
+// Texas, Pineapple and five-card-draw are always No-Limit; every other
+// variant is always Pot Limit — see isPotLimitVariant in game-engine.ts.
+// There is no separate "-pl" variant anymore (removed — Omaha/Omaha5/
+// Omaha-HL/Drawmaha/Courchevel are simply pot-limit by definition now, not a
+// picker option).
+export type GameVariant = 'texas' | 'omaha' | 'omaha5' | 'omaha-hl' | 'courchevel' | 'drawmaha' | 'pineapple' | 'pineapple-classic' | 'five-card-draw';
 
 export type PlayerStatus =
   | 'playing'
@@ -160,7 +166,13 @@ export interface TournamentState {
   pasjonaciRecorded?: boolean;
 }
 
-export type HandPhase = 'preflop' | 'flop' | 'draw' | 'pineapple-discard' | 'turn' | 'river' | 'showdown';
+export type HandPhase =
+  | 'preflop' | 'flop' | 'draw' | 'pineapple-discard' | 'turn' | 'river' | 'showdown'
+  // five-card-draw only: simultaneous discard/redraw, then one more betting
+  // round before showdown. Distinct from Drawmaha's 'draw' (which has a
+  // public open-card reveal sub-phase and an Omaha-style board) and from
+  // Pineapple's discard (single fixed card, no redraw).
+  | 'draw-discard' | 'postdraw';
 
 export interface SidePot {
   amount: number;
@@ -259,6 +271,14 @@ export interface PineappleDiscardState {
   discardDeadline: number | null;
 }
 
+// ===== FIVE CARD DRAW STATE =====
+// Simultaneous discard-and-redraw, no reveal sub-phase (unlike Drawmaha) and
+// any number of cards 0-5 (unlike Pineapple's fixed single discard).
+export interface FiveCardDrawState {
+  playerStates: Record<string, { hasDiscarded: boolean; discardIndices: number[] }>;
+  discardDeadline: number | null;
+}
+
 export interface GameState {
   phase: HandPhase;
   // Game variant for this specific hand (determined when hand starts, based on dealer's preference)
@@ -278,6 +298,8 @@ export interface GameState {
   drawState?: DrawState;
   // Only present during Pineapple Classic pineapple-discard phase
   pineappleDiscardState?: PineappleDiscardState;
+  // Only present during five-card-draw's draw-discard phase
+  fiveCardDrawState?: FiveCardDrawState;
   // Present while an all-in "Run It Twice?" vote is open
   runItTwiceState?: RunItTwiceState;
   // Set once the Run It Twice question has been asked (accepted, declined, or
@@ -391,6 +413,7 @@ export interface Room {
 export interface ClientToServerEvents {
   'game:show-hand': () => void;
   'game:pineapple-discard': (payload: { discardIndex: number }, callback: (r: { ok: boolean; error?: string }) => void) => void;
+  'game:five-card-draw-discard': (payload: { discardIndices: number[] }, callback: (r: { ok: boolean; error?: string }) => void) => void;
   'room:create': (
     // source: 'pasjonaci' tags the room so results silently sync to the
     // shared Pasjonaci ledger — set only by the /pasjonaci page.

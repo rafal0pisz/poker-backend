@@ -19,6 +19,8 @@ import {
   performPineappleDiscard,
   isPineappleDiscardComplete,
   initPineappleDiscardState,
+  performFiveCardDrawDiscard,
+  isFiveCardDrawDiscardComplete,
   isRevealPhaseComplete,
   getNextDecidingPlayer,
   canOfferRunItTwice,
@@ -441,6 +443,14 @@ function cleanupDrawStateForRemovedPlayer(room: Room, sessionToken: string): voi
   delete ds.openCards[sessionToken];
 }
 
+// Same idea as cleanupDrawStateForRemovedPlayer, for five-card-draw's simpler
+// discard state (no openCards/reveal sub-phase to worry about).
+function cleanupFiveCardDrawStateForRemovedPlayer(room: Room, sessionToken: string): void {
+  const fs = room.gameState?.fiveCardDrawState;
+  if (!fs) return;
+  delete fs.playerStates[sessionToken];
+}
+
 // Per-room processing queue — prevents concurrent progressGame calls
 // that could corrupt game state (action timer fires same time as player action)
 const roomProcessing = new Map<string, boolean>();
@@ -483,7 +493,7 @@ function scheduleActionTimer(roomId: string) {
   if (!room || !room.gameState) return;
 
   const { currentPlayerSeat, actionDeadline, currentBet, phase } = room.gameState;
-  if (currentPlayerSeat === null || !actionDeadline || phase === 'showdown' || phase === 'pineapple-discard' || phase === 'draw') return;
+  if (currentPlayerSeat === null || !actionDeadline || phase === 'showdown' || phase === 'pineapple-discard' || phase === 'draw' || phase === 'draw-discard') return;
 
   const delay = Math.max(0, actionDeadline - Date.now());
 
@@ -1390,6 +1400,18 @@ function progressGameInner(roomId: string) {
     return;
   }
 
+  // ===== FIVE CARD DRAW: draw-discard phase handling =====
+  if (room.gameState.phase === 'draw-discard') {
+    if (isFiveCardDrawDiscardComplete(room)) {
+      const deck3 = roomManager.getDeck(roomId) || [];
+      advancePhase(room, deck3);
+      broadcastRoomState(room);
+      scheduleActionTimer(roomId);
+    }
+    // During discard phase we don't run normal betting logic
+    return;
+  }
+
   if (isHandComplete(room) && room.gameState.phase !== 'showdown') {
     const result = finishHand(room);
     room.gameState.lastHandResult = result;
@@ -1421,7 +1443,11 @@ function progressGameInner(roomId: string) {
   }
 
   if (isBettingRoundComplete(room)) {
-    if (room.gameState.phase === 'river') {
+    // 'river' is the last betting street for every community-card variant;
+    // five-card-draw has no board at all, so its own last street is
+    // 'postdraw' (the betting round after the discard/redraw) — 'postdraw'
+    // never occurs for any other variant, so this OR is unambiguous.
+    if (room.gameState.phase === 'river' || room.gameState.phase === 'postdraw') {
       advancePhase(room, roomManager.getDeck(roomId) || []);
       const result = finishHand(room);
       room.gameState.lastHandResult = result;
@@ -1718,6 +1744,9 @@ io.on('connection', (socket) => {
         if (room.gameState.phase === 'draw') {
           cleanupDrawStateForRemovedPlayer(room, sessionToken);
           mayHaveUnblockedDraw = true;
+        } else if (room.gameState.phase === 'draw-discard') {
+          cleanupFiveCardDrawStateForRemovedPlayer(room, sessionToken);
+          mayHaveUnblockedDraw = true;
         } else {
           performAction(room, sessionToken, 'fold');
           // If their fold ends the hand, run progressGame to settle the pot
@@ -1926,6 +1955,44 @@ io.on('connection', (socket) => {
     withRoomLock(roomId, () => progressGame(roomId));
   });
 
+  // ===== FIVE CARD DRAW: simultaneous discard/redraw, no reveal =====
+  socket.on('game:five-card-draw-discard', (payload, callback) => {
+    const sessionToken = socket.data.sessionToken;
+    const roomId = socket.data.roomId;
+    if (!sessionToken || !roomId) {
+      return callback?.({ ok: false, error: 'No session' });
+    }
+    const room = roomManager.getRoom(roomId);
+    if (!room) return callback?.({ ok: false, error: 'Room not found' });
+
+    const deck = roomManager.getDeck(roomId);
+    if (!deck) return callback?.({ ok: false, error: 'No deck' });
+
+    const result = performFiveCardDrawDiscard(room, sessionToken, payload.discardIndices, deck);
+    if (!result.ok) {
+      return callback?.({ ok: false, error: result.error });
+    }
+
+    const player = room.players.find((p) => p.sessionToken === sessionToken);
+    if (player?.holeCards) {
+      socket.emit('game:your-cards', player.holeCards);
+    }
+
+    const discardCount = payload.discardIndices.length;
+    if (player) {
+      emitSystemMessage(
+        roomId,
+        discardCount === 0
+          ? `🂠 ${player.nick} stands pat (keeps all 5 cards)`
+          : `🂠 ${player.nick} draws ${discardCount} card${discardCount === 1 ? '' : 's'}`,
+      );
+    }
+
+    callback?.({ ok: true });
+    broadcastRoomStateDebounced(room);
+    withRoomLock(roomId, () => progressGame(roomId));
+  });
+
   // ===== DRAWMAHA: Reveal phase — accept or reject open card =====
   socket.on('game:draw-decide', (payload, callback) => {
     const sessionToken = socket.data.sessionToken;
@@ -2121,7 +2188,7 @@ io.on('connection', (socket) => {
       return callback?.({ ok: false, error: "Tournament has a fixed variant — Dealer's Choice is disabled" });
     }
 
-    const allowed: GameVariant[] = ['texas', 'omaha', 'omaha5', 'omaha-hl', 'drawmaha', 'pineapple', 'pineapple-classic'];
+    const allowed: GameVariant[] = ['texas', 'omaha', 'omaha5', 'omaha-hl', 'courchevel', 'drawmaha', 'pineapple', 'pineapple-classic', 'five-card-draw'];
     if (!allowed.includes(payload.variant)) {
       return callback?.({ ok: false, error: 'Unknown variant' });
     }
@@ -2553,9 +2620,11 @@ io.on('connection', (socket) => {
 
     // Same stale-drawState risk as room:leave — clean up before removing so a
     // kick mid-"wymiana" can't leave the draw phase permanently stuck.
-    const wasInDrawPhase = room.gameState?.phase === 'draw';
-    if (wasInDrawPhase) {
+    const wasInDrawPhase = room.gameState?.phase === 'draw' || room.gameState?.phase === 'draw-discard';
+    if (room.gameState?.phase === 'draw') {
       cleanupDrawStateForRemovedPlayer(room, payload.targetSessionToken);
+    } else if (room.gameState?.phase === 'draw-discard') {
+      cleanupFiveCardDrawStateForRemovedPlayer(room, payload.targetSessionToken);
     }
 
     const result = roomManager.removePlayer(payload.targetSessionToken);
@@ -3006,6 +3075,33 @@ setInterval(() => {
             console.log(`[watchdog] Auto-discarded last card for ${p.nick}`);
           }
           if (pending.length > 0) { broadcastRoomState(r); progressGame(roomId); }
+        });
+      }
+    }
+
+    // ── 5. Five Card Draw DISCARD phase: stuck if deadline passed 30s ───
+    if (phase === 'draw-discard') {
+      const discardDeadline = room.gameState.fiveCardDrawState?.discardDeadline;
+      if (discardDeadline && now > discardDeadline + 30_000) {
+        console.log(`[watchdog] Room ${roomId}: five-card-draw discard stuck — auto stand-pat`);
+        withRoomLock(roomId, () => {
+          const r = roomManager.getRoom(roomId);
+          if (!r?.gameState?.fiveCardDrawState) return;
+          const deck = roomManager.getDeck(roomId);
+          if (!deck) return;
+          const ds = r.gameState.fiveCardDrawState;
+          const pending = r.players.filter(
+            p => ds.playerStates[p.sessionToken] && !ds.playerStates[p.sessionToken].hasDiscarded
+          );
+          for (const p of pending) {
+            performFiveCardDrawDiscard(r, p.sessionToken, [], deck);
+            console.log(`[watchdog] Auto stand-pat: ${p.nick}`);
+          }
+          // Same "departed player" re-check as the Drawmaha draw watchdog above.
+          if (pending.length > 0 || isFiveCardDrawDiscardComplete(r)) {
+            broadcastRoomState(r);
+            progressGame(roomId);
+          }
         });
       }
     }

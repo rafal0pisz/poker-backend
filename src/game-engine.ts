@@ -6,6 +6,7 @@ import type {
   ActionType,
   DrawPlayerState,
   DrawState,
+  FiveCardDrawState,
   GameVariant,
   HandPhase,
   HandResult,
@@ -26,10 +27,10 @@ export function isDrawmahaVariant(variant: GameVariant): boolean {
   return variant === 'drawmaha';
 }
 
-// Texas Hold'em and Pineapple stay No-Limit; every other variant (Omaha,
-// Omaha5, Omaha Hi-Lo, Drawmaha) is Pot Limit only.
+// Texas Hold'em, Pineapple and five-card-draw stay No-Limit; every other
+// variant (Omaha, Omaha5, Omaha Hi-Lo, Courchevel, Drawmaha) is Pot Limit only.
 export function isPotLimitVariant(variant: GameVariant): boolean {
-  return variant !== 'texas' && variant !== 'pineapple' && variant !== 'pineapple-classic';
+  return variant !== 'texas' && variant !== 'pineapple' && variant !== 'pineapple-classic' && variant !== 'five-card-draw';
 }
 
 /**
@@ -305,9 +306,9 @@ export function startNewHand(room: Room): { deck: Card[] } {
     : dealerPlayer?.preferredVariant || 'texas';
 
   // Number of hole cards based on variant
-  // Texas: 2, Omaha: 4, Drawmaha: 5
+  // Texas: 2, Omaha: 4, Drawmaha/Omaha5/Courchevel/five-card-draw: 5
   const cardsPerPlayer = (variant === 'omaha' || variant === 'omaha-hl') ? 4
-    : (variant === 'omaha5') ? 5
+    : (variant === 'omaha5' || variant === 'courchevel' || variant === 'five-card-draw') ? 5
     : isDrawmahaVariant(variant) ? 5
     : (variant === 'pineapple' || variant === 'pineapple-classic') ? 3
     : 2;
@@ -319,6 +320,15 @@ export function startNewHand(room: Room): { deck: Card[] } {
       player.holeCards.push(deck.pop()!);
     }
   }
+
+  // Courchevel: the first flop card is shown BEFORE the preflop betting
+  // round (unlike every other community-card variant, where the whole flop
+  // is dealt together after preflop betting ends) — deal it now so it's
+  // already in communityCards when gameState.phase starts at 'preflop'.
+  // advancePhase's flop step deals the other 2 cards to complete it later.
+  const initialCommunityCards: Card[] = variant === 'courchevel'
+    ? dealCommunityCards(room, deck, 1)
+    : [];
 
   // Heads-up (exactly 2 active players): the dealer/button posts the small
   // blind and acts first preflop; the other player posts the big blind and
@@ -364,7 +374,7 @@ export function startNewHand(room: Room): { deck: Card[] } {
   room.gameState = {
     phase: 'preflop',
     variant,
-    communityCards: [],
+    communityCards: initialCommunityCards,
     pot: 0,
     sidePots: [],
     currentBet: bb,
@@ -412,6 +422,9 @@ export function performAction(
   // Block regular actions during draw phases
   if (room.gameState.phase === 'draw') {
     return { ok: false, error: 'Use game:draw-discard during draw phase' };
+  }
+  if (room.gameState.phase === 'draw-discard') {
+    return { ok: false, error: 'Use game:five-card-draw-discard during the discard phase' };
   }
 
   const player = room.players.find((p) => p.sessionToken === sessionToken);
@@ -790,6 +803,102 @@ export function performPineappleDiscard(
 export function isPineappleDiscardComplete(room: Room): boolean {
   if (!room.gameState?.pineappleDiscardState) return false;
   const states = Object.values(room.gameState.pineappleDiscardState.playerStates);
+  return states.length > 0 && states.every((s) => s.hasDiscarded);
+}
+
+/**
+ * Initializes FiveCardDrawState when entering five-card-draw's draw-discard phase.
+ * Unlike Pineapple (fixed 1-of-3, no redraw) or Drawmaha (open-card reveal
+ * sub-phase for a 1-card exchange), this is a plain simultaneous 0-5 card
+ * discard-and-redraw with no reveal step at all. All-in players stand pat
+ * automatically — there's no more betting left for them to influence, so
+ * "no action needed" is the always-safe default (mirrors how Pineapple
+ * auto-discards a fixed card for all-in players, just with an empty
+ * discard here instead of a forced one).
+ */
+export function initFiveCardDrawState(room: Room): FiveCardDrawState {
+  const active = room.players.filter(
+    (p) => p.status === 'playing' || p.status === 'all-in',
+  );
+  const playerStates: Record<string, { hasDiscarded: boolean; discardIndices: number[] }> = {};
+  for (const p of active) {
+    if (p.status === 'all-in') {
+      playerStates[p.sessionToken] = { hasDiscarded: true, discardIndices: [] };
+    } else {
+      playerStates[p.sessionToken] = { hasDiscarded: false, discardIndices: [] };
+    }
+  }
+  return {
+    playerStates,
+    discardDeadline: Date.now() + room.settings.actionTimeoutSec * 1000,
+  };
+}
+
+/**
+ * Player submits which cards to discard in five-card-draw (0-5 of their 5).
+ * Each discarded card is replaced with a new one from the deck — no reveal,
+ * no partial-hand window (unlike Drawmaha's single-card-exchange case, a
+ * player here never holds fewer than 5 cards at any observable point).
+ */
+export function performFiveCardDrawDiscard(
+  room: Room,
+  sessionToken: string,
+  discardIndices: number[],
+  deck: Card[],
+): { ok: true } | { ok: false; error: string } {
+  if (!room.gameState || room.gameState.phase !== 'draw-discard') {
+    return { ok: false, error: 'Not in draw-discard phase' };
+  }
+  if (!room.gameState.fiveCardDrawState) {
+    return { ok: false, error: 'Discard state not initialized' };
+  }
+
+  const player = room.players.find((p) => p.sessionToken === sessionToken);
+  if (!player) return { ok: false, error: 'Player not found' };
+
+  const ps = room.gameState.fiveCardDrawState.playerStates[sessionToken];
+  if (!ps) return { ok: false, error: 'Player not in discard state' };
+  if (ps.hasDiscarded) return { ok: false, error: 'Already discarded' };
+
+  const holeCount = player.holeCards?.length ?? 5;
+  const uniqueIndices = [...new Set(discardIndices)];
+  for (const idx of uniqueIndices) {
+    if (idx < 0 || idx >= holeCount) {
+      return { ok: false, error: `Invalid card index: ${idx}` };
+    }
+  }
+
+  if (player.holeCards) {
+    for (const idx of uniqueIndices) {
+      if (deck.length === 0) {
+        const added = refillDeckFromMuck(room, deck);
+        if (added === 0) {
+          console.warn(`[5CardDraw] Deck + muck exhausted for ${player.nick} — keeping remaining cards`);
+          break;
+        }
+      }
+      const newCard = deck.pop();
+      if (!newCard) break;
+      player.holeCards[idx] = newCard;
+    }
+  }
+
+  ps.discardIndices = uniqueIndices;
+  ps.hasDiscarded = true;
+  return { ok: true };
+}
+
+/**
+ * Check if all active players have submitted their five-card-draw discard.
+ * Filters to currently-seated players so a player removed mid-discard
+ * (left or kicked) can't leave a stale entry that blocks this forever.
+ */
+export function isFiveCardDrawDiscardComplete(room: Room): boolean {
+  if (!room.gameState?.fiveCardDrawState) return false;
+  const seated = new Set(room.players.map((p) => p.sessionToken));
+  const states = Object.entries(room.gameState.fiveCardDrawState.playerStates)
+    .filter(([token]) => seated.has(token))
+    .map(([, s]) => s);
   return states.length > 0 && states.every((s) => s.hasDiscarded);
 }
 
@@ -1806,6 +1915,47 @@ export function advancePhase(room: Room, deck: Card[]): void {
     return;
   }
 
+  if (variant === 'five-card-draw') {
+    // No community cards at all — preflop betting, one simultaneous
+    // discard/redraw round, one more betting round, showdown.
+    const fiveCardDrawOrder: HandPhase[] = ['preflop', 'draw-discard', 'postdraw', 'showdown'];
+    const currentIdx = fiveCardDrawOrder.indexOf(room.gameState.phase);
+    const nextPhase = fiveCardDrawOrder[currentIdx + 1];
+    if (!nextPhase) return;
+
+    if (nextPhase === 'draw-discard') {
+      room.gameState.phase = 'draw-discard';
+      room.gameState.currentPlayerSeat = null; // all players act simultaneously
+      room.gameState.actionDeadline = null;
+      room.gameState.fiveCardDrawState = initFiveCardDrawState(room);
+      return;
+    }
+
+    room.gameState.phase = nextPhase;
+    room.gameState.fiveCardDrawState = undefined;
+
+    if (nextPhase !== 'showdown') {
+      const stillPlaying = room.players.filter((p) => p.status === 'playing');
+      const stillAllIn = room.players.filter((p) => p.status === 'all-in').length;
+      if (stillPlaying.length === 0) {
+        room.gameState.currentPlayerSeat = null;
+        room.gameState.actionDeadline = null;
+      } else if (stillPlaying.length === 1 && stillAllIn >= 1) {
+        stillPlaying[0].hasActedThisRound = true;
+        room.gameState.currentPlayerSeat = null;
+        room.gameState.actionDeadline = null;
+      } else {
+        const firstSeat = getNextActiveSeat(room, room.gameState.dealerSeat, false);
+        room.gameState.currentPlayerSeat = firstSeat;
+        room.gameState.actionDeadline = Date.now() + room.settings.actionTimeoutSec * 1000;
+      }
+    } else {
+      room.gameState.currentPlayerSeat = null;
+      room.gameState.actionDeadline = null;
+    }
+    return;
+  }
+
   if (isDrawmahaVariant(variant)) {
     const drawmahaOrder: HandPhase[] = ['preflop', 'flop', 'draw', 'turn', 'river', 'showdown'];
     const currentIdx = drawmahaOrder.indexOf(room.gameState.phase);
@@ -1819,7 +1969,10 @@ export function advancePhase(room: Room, deck: Card[]): void {
   room.gameState.phase = nextPhase;
 
   if (nextPhase === 'flop') {
-    room.gameState.communityCards.push(...dealCommunityCards(room, deck, 3));
+    // Courchevel already has 1 board card showing from before the preflop
+    // betting round (see startNewHand) — only 2 more are needed to complete
+    // the flop's usual 3 cards. Every other variant deals all 3 here.
+    room.gameState.communityCards.push(...dealCommunityCards(room, deck, variant === 'courchevel' ? 2 : 3));
   } else if (nextPhase === 'turn' || nextPhase === 'river') {
     room.gameState.communityCards.push(...dealCommunityCards(room, deck, 1));
   } else if (nextPhase === 'draw') {
@@ -1883,8 +2036,10 @@ export function finishHand(room: Room): HandResult {
     return finalizeDrawmahaHand(room);
   }
 
-  // Omaha Hi-Lo uses its own high/low split finisher
-  if (room.gameState.variant === 'omaha-hl') {
+  // Omaha Hi-Lo and Courchevel (also Hi-Lo, just 5 hole cards and an extra
+  // preflop board card) both use the same high/low split finisher — it only
+  // ever looks at solveOmaha/solveOmahaLow, which are hole-card-count-agnostic.
+  if (room.gameState.variant === 'omaha-hl' || room.gameState.variant === 'courchevel') {
     return finalizeOmahaHlHand(room);
   }
 
@@ -1968,6 +2123,13 @@ export function finishHand(room: Room): HandResult {
         // Must use exactly 1 or 2 hole cards — not 0 or 3
         const { hand, holeUsed, boardUsed } = solvePineapple(holeCards, board);
         return { hand, winningHoleCards: holeUsed, winningBoardCards: boardUsed };
+      }
+
+      if (variant === 'five-card-draw') {
+        // No board at all — solveTexas(holeCards, []) degrades correctly to
+        // "best 5 of my own 5 cards", standard high-hand ranking.
+        const { hand, winningCards } = solveTexas(holeCards, []);
+        return { hand, winningHoleCards: winningCards, winningBoardCards: [] };
       }
 
       // Texas Hold'em / Drawmaha: use solveTexas to enumerate all C(7,5) combos.
@@ -2112,12 +2274,13 @@ export function finishHand(room: Room): HandResult {
 // ===== RUN IT TWICE =====
 //
 // Only offered for variants with a single, simple showdown evaluation
-// (Texas / Omaha / Omaha-PL / Omaha5 / Pineapple). Drawmaha and Omaha Hi-Lo
-// already split each pot into two halves by their own rules (Omaha+Draw,
-// High+Low) — stacking a second board split on top of that would need its
-// own dedicated design, so for now those variants keep the existing
-// single-board runout behavior.
-const RUN_IT_TWICE_INELIGIBLE_VARIANTS: GameVariant[] = ['drawmaha', 'omaha-hl'];
+// (Texas / Omaha / Omaha-PL / Omaha5 / Pineapple). Drawmaha, Omaha Hi-Lo and
+// Courchevel (also Hi-Lo) already split each pot into two halves by their own
+// rules (Omaha+Draw, High+Low) — stacking a second board split on top of that
+// would need its own dedicated design, so for now those variants keep the
+// existing single-board runout behavior. five-card-draw has no community
+// board at all, so "running the board twice" is meaningless for it.
+const RUN_IT_TWICE_INELIGIBLE_VARIANTS: GameVariant[] = ['drawmaha', 'omaha-hl', 'courchevel', 'five-card-draw'];
 
 /**
  * True exactly once per hand, at the moment an all-in runout is first
